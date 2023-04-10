@@ -151,7 +151,7 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type='TextLoggerHook', by_epoch=False),
-        dict(type='TensorboardLoggerHook', by_epoch=False)
+        # dict(type='TensorboardLoggerHook', by_epoch=False)
     ])
 interval = 5000
 workflow = [('train', interval)]
@@ -162,4 +162,4 @@ evaluation = dict(
     interval=interval,
     metric=['bbox', 'segm'])
 
-load_from = 'pretrain/pretrained_backone_and_neck.pth'
+# load_from = 'pretrain/pretrained_backone_and_neck.pth'

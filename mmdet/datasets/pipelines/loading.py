@@ -653,11 +653,13 @@ class LoadCoarseMasks:
                  with_bbox=False,
                  with_label=False,
                  poly2mask=True,
-                 test_mode=False):
+                 test_mode=False,
+                 area_thr=0):
         self.with_bbox = with_bbox
         self.with_label = with_label
         self.poly2mask = poly2mask
         self.test_mode = test_mode
+        self.area_thr = area_thr
     
     def _poly2mask(self, mask_ann, img_h, img_w):
         """Private function to convert masks represented with polygon to
@@ -719,14 +721,12 @@ class LoadCoarseMasks:
         else:
             for mask in coarse_masks:
                 new_coarse_masks.append(self._poly2mask(mask, h, w))
+            if self.area_thr:
+                new_coarse_masks = BitmapMasks(new_coarse_masks, h, w)
+                areas = new_coarse_masks.areas
+                valid_idx = areas >= self.area_thr
+                new_coarse_masks = new_coarse_masks.masks[valid_idx]
 
-        new_coarse_masks = BitmapMasks(new_coarse_masks, h, w)
-        areas = new_coarse_masks.areas
-        valid_idx = areas >= 512
-
-        # new_valid_idx = np.zeros_like(valid_idx, dtype=bool)
-
-        new_coarse_masks = new_coarse_masks.masks[valid_idx]
         results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
         results['mask_fields'].append('coarse_masks')
         if self.with_bbox:

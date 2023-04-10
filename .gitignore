@@ -111,7 +111,6 @@ venv.bak/
 
 data/
 data
-.vscode
 .idea
 .DS_Store
 

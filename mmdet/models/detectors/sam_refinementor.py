@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from mmcv.runner import BaseModule
+from .base import BaseDetector
 from ..builder import DETECTORS, build_backbone, build_head
 import numpy as np
 
@@ -38,7 +38,7 @@ def mask2bbox(np_masks, device, H, W, pad_width=0):
     return bboxes
 
 @DETECTORS.register_module()
-class SamRefinementor(BaseModule):
+class SamRefinementor(BaseDetector):
     def __init__(self,
                  image_encoder,
                  prompt_encoder,
@@ -104,19 +104,25 @@ class SamRefinementor(BaseModule):
                       gt_masks,
                       coarse_masks):
         current_device = img.device
-        img_embddings = self.image_encoder(img)
+        img_embddings = self.extract_feat(img)
         proposals, x_start, x_last = self._get_refine_input(gt_masks, coarse_masks, current_device)
         t = uniform_sampler(self.num_timesteps, x_start.shape[0], x_start.device)
         x_t = self.q_sample(x_start, x_last, t, current_device)
-        sparse_embeddings, dense_embeddings = self.prompt_encoder(proposals, x_t,)
+        sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(proposals, x_t, t)
         low_res_masks, iou_predictions = self.mask_decoder(
-            image_embeddings=img_embddings,
-            image_pe=self.prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_embeddings,
-            dense_prompt_embeddings=dense_embeddings)
+            img_embddings,
+            self.prompt_encoder.get_dense_pe(),
+            sparse_embeddings,
+            dense_embeddings,
+            time_embeddings)
 
         losses = dict()
         return losses
+    
+    def extract_feat(self, img):
+        """Directly extract features from the backbone and neck."""
+        x = self.image_encoder(img)
+        return x
     
     def _get_refine_input(self, gt_masks, coarse_masks, current_device):
         proposals, x_start, x_last = [], [], []
@@ -134,10 +140,10 @@ class SamRefinementor(BaseModule):
         x_last = torch.cat(x_last, dim=0)
         batch_size = len(x_last)
         # print(batch_size)
-        if batch_size > self.max_batch:
-            proposals = torch.cat((proposals[:self.max_batch//2], proposals[-self.max_batch//2:]), dim=0)
-            x_start = torch.cat((x_start[:self.max_batch//2], x_start[-self.max_batch//2:]), dim=0)
-            x_last = torch.cat((x_last[:self.max_batch//2], x_last[-self.max_batch//2:]), dim=0)
+        # if batch_size > self.max_batch:
+        #     proposals = torch.cat((proposals[:self.max_batch//2], proposals[-self.max_batch//2:]), dim=0)
+        #     x_start = torch.cat((x_start[:self.max_batch//2], x_start[-self.max_batch//2:]), dim=0)
+        #     x_last = torch.cat((x_last[:self.max_batch//2], x_last[-self.max_batch//2:]), dim=0)
         return proposals, x_start, x_last
 
     def simple_test(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
@@ -160,6 +166,9 @@ class SamRefinementor(BaseModule):
             bbox_results = [np.zeros([0, 4]) for _ in range(self.num_classes)]
             mask_results = [[] for _ in range(self.num_classes)]
         return [(bbox_results, mask_results)]
+
+    def aug_test(self, imgs, img_metas, rescale=False):
+        raise NotImplementedError
     
     def _format_bboxes_results(self,bboxes, labels):
         '''

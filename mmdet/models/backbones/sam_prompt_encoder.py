@@ -96,9 +96,9 @@ class SamPromptEncoder(BaseModule):
             nn.Conv2d(mask_in_chans, embed_dim, kernel_size=1),
         )
         self.time_embed = nn.Sequential(
-            nn.Linear(model_channels, time_embed_dim),
+            nn.Linear(embed_dim, embed_dim),
             nn.SiLU(),
-            nn.Linear(time_embed_dim, time_embed_dim),
+            nn.Linear(embed_dim, embed_dim),
         )
 
     def get_dense_pe(self) -> torch.Tensor:
@@ -149,13 +149,10 @@ class SamPromptEncoder(BaseModule):
           torch.Tensor: dense embeddings for the masks, in the shape
             Bx(embed_dim)x(embed_H)x(embed_W)
         """
-        bs = boxes.shape[0]
-        time_embeddings = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self._get_device())
+        time_embeddings = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
         box_embeddings = self._embed_boxes(boxes)
-        sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
         dense_embeddings = self._embed_masks(masks)
-        return sparse_embeddings, dense_embeddings, time_embeddings
+        return box_embeddings, dense_embeddings, time_embeddings
 
 
 class PositionEmbeddingRandom(nn.Module):

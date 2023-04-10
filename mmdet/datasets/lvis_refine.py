@@ -297,7 +297,7 @@ class LVISRefine(LVISV1Dataset):
                     coarse_infos.update({img_id: []})
                 coarse_infos[img_id].append(dt)
         elif isinstance(coarse_dts, dict):
-            coarse_infos = json.load(open(coarse_file))
+            coarse_infos = coarse_dts
         else:
             raise TypeError('unsupported coarse_dt type')
         return coarse_infos

@@ -55,11 +55,11 @@ img_norm_cfg = dict(
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=False, with_label=False, with_mask=True),
-    dict(type='LoadCoarseMasks', with_label=False),
-    dict(type='Resize', img_scale=(image_size, image_size), keep_ratio=True),
+    dict(type='LoadCoarseMasks'),
+    dict(type='Resize', img_scale=(image_size, image_size), mask_scale_factor=0.25, keep_ratio=True),
     dict(type='RandomFlip', flip_ratio=0.5),
     dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size=(image_size, image_size), img_only=True),
+    dict(type='Pad', size=(image_size, image_size)),
     dict(type='DefaultFormatBundle'),
     dict(type='Collect', keys=['img', 'gt_masks', 'coarse_masks'])]
 
@@ -78,8 +78,8 @@ dataset_type = 'LVISRefine'
 img_root = 'data/coco/'
 ann_root = 'data/lvis_annotations/'
 train_dataloader=dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2)
+    samples_per_gpu=1,
+    workers_per_gpu=1)
 test_dataloader=dict(
     samples_per_gpu=1,
     workers_per_gpu=1)
@@ -139,7 +139,7 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type='TextLoggerHook', by_epoch=False),
-        dict(type='TensorboardLoggerHook', by_epoch=False)
+        # dict(type='TensorboardLoggerHook', by_epoch=False)
     ])
 interval = 5000
 workflow = [('train', interval)]
