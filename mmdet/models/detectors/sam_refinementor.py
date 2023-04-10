@@ -1,16 +1,17 @@
 import torch
 import numpy as np
 from .base import BaseDetector
-from ..builder import DETECTORS, build_backbone, build_head
+from ..builder import DETECTORS, build_backbone, build_head, build_loss
 import numpy as np
 
+from PIL import Image
 
 def uniform_sampler(num_steps, batch_size, device):
     indices_np = np.random.choice(num_steps, size=(batch_size,))
     indices = torch.from_numpy(indices_np).long().to(device)
-    return indices
+    return indices      
 
-def mask2bbox(np_masks, device, H, W, pad_width=0):
+def mask2bbox(np_masks, device, H, W, pad_width=0, scale_factor=None):
     """Obtain tight bounding boxes of binary masks.
 
     Args:
@@ -35,6 +36,10 @@ def mask2bbox(np_masks, device, H, W, pad_width=0):
     bboxes[:, 1] = (bboxes[:, 1] - pad_width).clamp(min=0)
     bboxes[:, 2] = (bboxes[:, 2] + pad_width).clamp(max=W)
     bboxes[:, 3] = (bboxes[:, 3] + pad_width).clamp(max=H)
+    if scale_factor is not None:
+        scale_factor = scale_factor.reshape(1, 4)
+        scale_factor = torch.tensor(scale_factor, device=bboxes.device)
+        bboxes = bboxes * scale_factor
     return bboxes
 
 @DETECTORS.register_module()
@@ -46,6 +51,8 @@ class SamRefinementor(BaseDetector):
                  diffusion_betas,
                  train_cfg,
                  test_cfg,
+                 mask_loss=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
+                 iou_loss=dict(type='MSELoss', loss_weight=1.0),
                  num_classes=77,
                  init_cfg=None):
         super(SamRefinementor, self).__init__(init_cfg=init_cfg)
@@ -56,6 +63,8 @@ class SamRefinementor(BaseDetector):
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
         self._diffusion_init(diffusion_betas)
+        self.mask_loss = build_loss(mask_loss)
+        self.iou_loss = build_loss(iou_loss)
         self.num_classes = num_classes
     
     def _diffusion_init(self, betas):
@@ -105,7 +114,7 @@ class SamRefinementor(BaseDetector):
                       coarse_masks):
         current_device = img.device
         img_embddings = self.extract_feat(img)
-        proposals, x_start, x_last = self._get_refine_input(gt_masks, coarse_masks, current_device)
+        proposals, x_start, x_last = self._get_refine_input(gt_masks, coarse_masks, current_device, img_metas)
         t = uniform_sampler(self.num_timesteps, x_start.shape[0], x_start.device)
         x_t = self.q_sample(x_start, x_last, t, current_device)
         sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(proposals, x_t, t)
@@ -115,23 +124,37 @@ class SamRefinementor(BaseDetector):
             sparse_embeddings,
             dense_embeddings,
             time_embeddings)
-
+        
+        mask_save(x_last, x_start, low_res_masks)
+        
         losses = dict()
+        mask_targets = x_start.unsqueeze(1)
+        iou_targets = self.cal_iou(mask_targets, low_res_masks)
+        losses['loss_mask'] = self.mask_loss(low_res_masks, mask_targets)
+        losses['loss_iou'] = self.iou_loss(iou_predictions, iou_targets)
         return losses
     
+    @torch.no_grad()
+    def cal_iou(self, target, mask, eps=1e-3):
+        target = target >= 0.5
+        mask = mask >= 0
+        si = (target & mask).sum(-1).sum(-1)
+        su = (target | mask).sum(-1).sum(-1)
+        return (si / su + eps)
+
     def extract_feat(self, img):
         """Directly extract features from the backbone and neck."""
         x = self.image_encoder(img)
         return x
     
-    def _get_refine_input(self, gt_masks, coarse_masks, current_device):
+    def _get_refine_input(self, gt_masks, coarse_masks, current_device, img_metas):
         proposals, x_start, x_last = [], [], []
         for img_gt_masks, img_coarse_masks in zip(gt_masks, coarse_masks):
             assert len(img_gt_masks) == len(img_coarse_masks)
             num_ins = len(img_gt_masks)
             if num_ins > 0:
                 H, W = img_gt_masks.height, img_gt_masks.width
-                img_proposals = mask2bbox(img_coarse_masks.masks, current_device, H, W)
+                img_proposals = mask2bbox(img_coarse_masks.masks, current_device, H, W, scale_factor=img_metas[0]['scale_factor'])
                 proposals.append(img_proposals)
                 x_start.append(torch.tensor(img_gt_masks.masks, device=current_device))
                 x_last.append(torch.tensor(img_coarse_masks.masks, device=current_device))
@@ -193,3 +216,20 @@ class SamRefinementor(BaseDetector):
         for i in range(len(masks)):
             cls_masks[labels[i]].append(masks[i])
         return cls_masks
+
+def mask_save(gt, coarse, refine):
+    refine = (refine >= 0).squeeze(1)
+    gt = gt.cpu().numpy().astype(np.uint8)
+    gt = gt * 255
+    coarse = coarse.cpu().numpy().astype(np.uint8)
+    coarse = coarse * 255
+    refine = refine.cpu().numpy().astype(np.uint8)
+    refine = refine * 255
+    idx = 0
+    for gt_mask, coarse_mask, refine_mask in zip(gt, coarse, refine):
+        empty = np.zeros_like(gt_mask)
+        out1 = np.concatenate((gt_mask, coarse_mask), axis=0)
+        out2 = np.concatenate((refine_mask, empty), axis=0)
+        out = np.concatenate((out1, out2), axis=1)
+        Image.fromarray(out).save(f'results/{idx}.png')
+        idx += 1

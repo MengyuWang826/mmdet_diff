@@ -11,7 +11,7 @@ from torch import nn
 
 from typing import Any, Optional, Tuple, Type
 
-from mmcv.runner import BaseModule, auto_fp16
+from mmcv.runner import BaseModule
 from ..builder import BACKBONES
 
 
@@ -34,6 +34,15 @@ def timestep_embedding(timesteps, dim, max_period=10000):
     if dim % 2:
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     return embedding
+
+def zero_module(module):
+    """
+    Zero out the parameters of a module and return it.
+    """
+    for p in module.parameters():
+        p.detach().zero_()
+    return module
+
 
 class LayerNorm2d(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
@@ -98,7 +107,7 @@ class SamPromptEncoder(BaseModule):
         self.time_embed = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.SiLU(),
-            nn.Linear(embed_dim, embed_dim),
+            zero_module(nn.Linear(embed_dim, embed_dim))
         )
 
     def get_dense_pe(self) -> torch.Tensor:

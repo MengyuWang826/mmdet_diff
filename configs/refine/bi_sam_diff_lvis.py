@@ -149,3 +149,5 @@ checkpoint_config = dict(
 evaluation = dict(
     interval=interval,
     metric=['bbox', 'segm'])
+
+load_from = 'pretrain/sam_pre.pth'
