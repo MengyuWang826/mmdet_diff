@@ -27,6 +27,8 @@ MANIFEST
 data
 checkpoints
 pretrain
+json_results
+
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -125,4 +127,4 @@ work_dirs/
 *.pth
 *.py~
 *.sh~
-*.json
+
