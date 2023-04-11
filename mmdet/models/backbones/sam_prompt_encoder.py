@@ -90,7 +90,7 @@ class SamPromptEncoder(BaseModule):
         self.image_embedding_size = image_embedding_size
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
 
-        self.num_point_embeddings: int = 2  # 2 box corners
+        self.num_point_embeddings: int = 2  # pos/neg point + 2 box corners
         point_embeddings = [nn.Embedding(1, embed_dim) for i in range(self.num_point_embeddings)]
         self.point_embeddings = nn.ModuleList(point_embeddings)
 
@@ -121,6 +121,16 @@ class SamPromptEncoder(BaseModule):
         """
         return self.pe_layer(self.image_embedding_size).unsqueeze(0)
 
+    def _embed_points(
+        self,
+        points: torch.Tensor,
+    ) -> torch.Tensor:
+        """Embeds point prompts."""
+        points = points + 0.5  # Shift to center of pixel
+        point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
+        point_embedding += self.point_embedding.weight
+        return point_embedding
+    
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
         """Embeds box prompts."""
         boxes = boxes + 0.5  # Shift to center of pixel
@@ -137,7 +147,7 @@ class SamPromptEncoder(BaseModule):
 
     def forward(
         self,
-        boxes,
+        bboxes,
         masks,
         timesteps,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -159,9 +169,9 @@ class SamPromptEncoder(BaseModule):
             Bx(embed_dim)x(embed_H)x(embed_W)
         """
         time_embeddings = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
-        box_embeddings = self._embed_boxes(boxes)
+        point_embeddings = self._embed_boxes(bboxes)
         dense_embeddings = self._embed_masks(masks)
-        return box_embeddings, dense_embeddings, time_embeddings
+        return point_embeddings, dense_embeddings, time_embeddings
 
 
 class PositionEmbeddingRandom(nn.Module):

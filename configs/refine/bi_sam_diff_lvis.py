@@ -43,7 +43,7 @@ model = dict(
         type='linear',
         start=1-1e-3,  # 1e-4 gauss, 0.02 uniform
         stop=0,  # 0.02, gauss, 1. uniform
-        num_timesteps=20),
+        num_timesteps=6),
     # model training and testing settings
     train_cfg=dict(
         pad_width=20),
@@ -110,14 +110,14 @@ evaluation = dict(metric=['bbox', 'segm'])
 
 optimizer = dict(
     type='AdamW',
-    lr=1e-4,
+    lr=5e-5,
     weight_decay=0,
     eps=1e-8,
     betas=(0.9, 0.999),
     paramwise_cfg=dict(
         custom_keys={
-            'backbone': dict(lr_mult=0.01),
-            'neck': dict(lr_mult=0.01)
+            'prompt_encoder': dict(lr_mult=10),
+            'mask_decoder': dict(lr_mult=0.1)
         }))
 optimizer_config = dict(grad_clip=None)
 
@@ -129,8 +129,8 @@ lr_config = dict(
     step=[327778, 355092],
     warmup='linear',
     warmup_by_epoch=False,
-    warmup_ratio=1.0,  # no warmup
-    warmup_iters=10)
+    warmup_ratio=0.01,  # no warmup
+    warmup_iters=150)
 
 max_iters = 400000
 runner = dict(type='IterBasedRunner', max_iters=max_iters)
@@ -150,4 +150,4 @@ evaluation = dict(
     interval=interval,
     metric=['bbox', 'segm'])
 
-load_from = 'pretrain/sam_pre.pth'
+load_from = 'pretrain/sam_pre_bbox_1.pth'

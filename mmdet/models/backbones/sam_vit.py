@@ -135,9 +135,9 @@ class SamImageEncoder(BaseModule):
             ),
             LayerNorm2d(out_chans),
         )
-
         for param in self.parameters():
             param.requires_grad = False
+        self.eval()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.patch_embed(x)

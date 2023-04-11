@@ -11,7 +11,7 @@ def uniform_sampler(num_steps, batch_size, device):
     indices = torch.from_numpy(indices_np).long().to(device)
     return indices      
 
-def mask2bbox(np_masks, device, H, W, pad_width=0, scale_factor=None):
+def mask2bboxcenter(np_masks, device, H, W, pad_width=5, scale_factor=4):
     """Obtain tight bounding boxes of binary masks.
 
     Args:
@@ -36,11 +36,11 @@ def mask2bbox(np_masks, device, H, W, pad_width=0, scale_factor=None):
     bboxes[:, 1] = (bboxes[:, 1] - pad_width).clamp(min=0)
     bboxes[:, 2] = (bboxes[:, 2] + pad_width).clamp(max=W)
     bboxes[:, 3] = (bboxes[:, 3] + pad_width).clamp(max=H)
-    if scale_factor is not None:
-        scale_factor = scale_factor.reshape(1, 4)
-        scale_factor = torch.tensor(scale_factor, device=bboxes.device)
-        bboxes = bboxes * scale_factor
-    return bboxes
+    bboxes = bboxes * scale_factor
+    center_x = 0.5 * (bboxes[:, 0] + bboxes[:, 2])
+    center_y = 0.5 * (bboxes[:, 1] + bboxes[:, 3])
+    center_coors = torch.stack((center_x, center_y), dim=1)
+    return bboxes, center_coors
 
 @DETECTORS.register_module()
 class SamRefinementor(BaseDetector):
@@ -106,7 +106,7 @@ class SamRefinementor(BaseDetector):
         # dim_4_cuda_mask_save(fine_map, f'results/fine_map{t}')
         # dim_4_cuda_mask_save(x_prev, f'results/x_prev{t}')
         return x_prev, cur_fine_probs
-        
+    
     def forward_train(self,
                       img,
                       img_metas,
@@ -114,24 +114,22 @@ class SamRefinementor(BaseDetector):
                       coarse_masks):
         current_device = img.device
         img_embddings = self.extract_feat(img)
-        proposals, x_start, x_last = self._get_refine_input(gt_masks, coarse_masks, current_device, img_metas)
+        bboxes, x_start, x_last = self._get_refine_input(gt_masks, coarse_masks, current_device)
         t = uniform_sampler(self.num_timesteps, x_start.shape[0], x_start.device)
         x_t = self.q_sample(x_start, x_last, t, current_device)
-        sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(proposals, x_t, t)
+        sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(bboxes, x_t, t)
         low_res_masks, iou_predictions = self.mask_decoder(
             img_embddings,
             self.prompt_encoder.get_dense_pe(),
             sparse_embeddings,
             dense_embeddings,
             time_embeddings)
-        
-        mask_save(x_last, x_start, low_res_masks)
-        
         losses = dict()
         mask_targets = x_start.unsqueeze(1)
         iou_targets = self.cal_iou(mask_targets, low_res_masks)
         losses['loss_mask'] = self.mask_loss(low_res_masks, mask_targets)
         losses['loss_iou'] = self.iou_loss(iou_predictions, iou_targets)
+        losses['iou'] = iou_targets.mean()
         return losses
     
     @torch.no_grad()
@@ -147,27 +145,27 @@ class SamRefinementor(BaseDetector):
         x = self.image_encoder(img)
         return x
     
-    def _get_refine_input(self, gt_masks, coarse_masks, current_device, img_metas):
-        proposals, x_start, x_last = [], [], []
+    def _get_refine_input(self, gt_masks, coarse_masks, current_device):
+        bboxes, x_start, x_last = [], [], []
         for img_gt_masks, img_coarse_masks in zip(gt_masks, coarse_masks):
             assert len(img_gt_masks) == len(img_coarse_masks)
             num_ins = len(img_gt_masks)
             if num_ins > 0:
                 H, W = img_gt_masks.height, img_gt_masks.width
-                img_proposals = mask2bbox(img_coarse_masks.masks, current_device, H, W, scale_factor=img_metas[0]['scale_factor'])
-                proposals.append(img_proposals)
+                bbox, _ = mask2bboxcenter(img_coarse_masks.masks, current_device, H, W)
+                bboxes.append(bbox)
                 x_start.append(torch.tensor(img_gt_masks.masks, device=current_device))
                 x_last.append(torch.tensor(img_coarse_masks.masks, device=current_device))
-        proposals = torch.cat(proposals, dim=0)
+        bboxes = torch.cat(bboxes, dim=0)
         x_start = torch.cat(x_start, dim=0)
         x_last = torch.cat(x_last, dim=0)
-        batch_size = len(x_last)
+        # batch_size = len(x_last)
         # print(batch_size)
         # if batch_size > self.max_batch:
         #     proposals = torch.cat((proposals[:self.max_batch//2], proposals[-self.max_batch//2:]), dim=0)
         #     x_start = torch.cat((x_start[:self.max_batch//2], x_start[-self.max_batch//2:]), dim=0)
         #     x_last = torch.cat((x_last[:self.max_batch//2], x_last[-self.max_batch//2:]), dim=0)
-        return proposals, x_start, x_last
+        return bboxes, x_start, x_last
 
     def simple_test(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
         """Test without augmentation."""
@@ -218,7 +216,7 @@ class SamRefinementor(BaseDetector):
         return cls_masks
 
 def mask_save(gt, coarse, refine):
-    refine = (refine >= 0).squeeze(1)
+    refine = refine.squeeze(1)
     gt = gt.cpu().numpy().astype(np.uint8)
     gt = gt * 255
     coarse = coarse.cpu().numpy().astype(np.uint8)

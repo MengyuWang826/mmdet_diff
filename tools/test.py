@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import argparse
 import os
+os.environ['CUDA_VISIBLE_DEVICES']='6'
 import os.path as osp
 import time
 import warnings
