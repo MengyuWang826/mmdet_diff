@@ -66,7 +66,7 @@ train_pipeline = [
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadCoarseMasks', with_bbox=True, test_mode=True),
-    dict(type='Resize', img_scale=(image_size, image_size), keep_ratio=True),
+    dict(type='Resize', img_scale=(image_size, image_size), mask_scale_factor=0.25, keep_ratio=True),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size=(image_size, image_size)),
     dict(type='DefaultFormatBundle'),
@@ -78,8 +78,8 @@ dataset_type = 'LVISRefine'
 img_root = 'data/coco/'
 ann_root = 'data/lvis_annotations/'
 train_dataloader=dict(
-    samples_per_gpu=1,
-    workers_per_gpu=1)
+    samples_per_gpu=2,
+    workers_per_gpu=2)
 test_dataloader=dict(
     samples_per_gpu=1,
     workers_per_gpu=1)
@@ -116,8 +116,7 @@ optimizer = dict(
     betas=(0.9, 0.999),
     paramwise_cfg=dict(
         custom_keys={
-            'prompt_encoder': dict(lr_mult=10),
-            'mask_decoder': dict(lr_mult=0.1)
+            'prompt_encoder': dict(lr_mult=10)
         }))
 optimizer_config = dict(grad_clip=None)
 
@@ -126,13 +125,13 @@ lr_config = dict(
     policy='step',
     gamma=0.1,
     by_epoch=False,
-    step=[327778, 355092],
+    step=[50000, 80000],
     warmup='linear',
     warmup_by_epoch=False,
     warmup_ratio=0.01,  # no warmup
     warmup_iters=150)
 
-max_iters = 400000
+max_iters = 100000
 runner = dict(type='IterBasedRunner', max_iters=max_iters)
 
 log_config = dict(
@@ -150,4 +149,4 @@ evaluation = dict(
     interval=interval,
     metric=['bbox', 'segm'])
 
-load_from = 'pretrain/sam_pre_bbox_1.pth'
+resume_from = 'work_dirs/bi_sam_diff_lvis/iter_7000.pth'

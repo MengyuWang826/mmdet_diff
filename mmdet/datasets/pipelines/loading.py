@@ -654,7 +654,7 @@ class LoadCoarseMasks:
                  with_label=False,
                  poly2mask=True,
                  test_mode=False,
-                 area_thr=0):
+                 area_thr=512):
         self.with_bbox = with_bbox
         self.with_label = with_label
         self.poly2mask = poly2mask

@@ -5,7 +5,7 @@ from numpy.core.fromnumeric import shape
 from .builder import DATASETS
 from .pipelines import Compose
 from .lvis import LVISV1Dataset
-import torch.distributed as dist
+# import torch.distributed as dist
 
 
 @DATASETS.register_module()
@@ -255,7 +255,7 @@ class LVISRefine(LVISV1Dataset):
                  **kwargs):
         print('loading DT json file...')
         self.coarse_infos = self.load_coarse(coarse_file)
-        dist.barrier()
+        # dist.barrier()
         print('loading GT json file...')
         super(LVISRefine, self).__init__(**kwargs)
         # dist.barrier()

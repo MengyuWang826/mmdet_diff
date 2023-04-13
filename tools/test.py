@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import argparse
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='6'
+# os.environ['CUDA_VISIBLE_DEVICES']='6'
 import os.path as osp
 import time
 import warnings
@@ -156,8 +156,8 @@ def main():
 
     if 'pretrained' in cfg.model:
         cfg.model.pretrained = None
-    elif 'init_cfg' in cfg.model.backbone:
-        cfg.model.backbone.init_cfg = None
+    # elif 'init_cfg' in cfg.model.backbone:
+    #     cfg.model.backbone.init_cfg = None
 
     if cfg.model.get('neck'):
         if isinstance(cfg.model.neck, list):
