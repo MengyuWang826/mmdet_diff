@@ -68,6 +68,7 @@ class SamPromptEncoder(BaseModule):
         mask_in_chans,
         image_embedding_size,
         activation=nn.GELU,
+        sam_zero_shot = False,
         init_cfg=None
     ) -> None:
         """
@@ -104,11 +105,14 @@ class SamPromptEncoder(BaseModule):
             activation(),
             nn.Conv2d(mask_in_chans, embed_dim, kernel_size=1),
         )
-        self.time_embed = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.SiLU(),
-            zero_module(nn.Linear(embed_dim, embed_dim))
-        )
+        if not sam_zero_shot:
+            self.time_embed = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.SiLU(),
+                zero_module(nn.Linear(embed_dim, embed_dim))
+            )
+        else:
+            self.no_mask_embed = nn.Embedding(1, embed_dim)
 
     def get_dense_pe(self) -> torch.Tensor:
         """
@@ -170,7 +174,11 @@ class SamPromptEncoder(BaseModule):
         """
         time_embeddings = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
         point_embeddings = self._embed_boxes(bboxes)
-        dense_embeddings = self._embed_masks(masks)
+        if masks is not None:
+            dense_embeddings = self._embed_masks(masks)
+        else:
+            dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
+                time_embeddings.shape[0], -1, self.image_embedding_size[0], self.image_embedding_size[1])
         return point_embeddings, dense_embeddings, time_embeddings
 
 

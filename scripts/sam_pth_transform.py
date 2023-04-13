@@ -17,16 +17,18 @@ for name in sam:
     if name not in diff:
         if name == 'prompt_encoder.point_embeddings.2.weight':
             diff_pre.update({'prompt_encoder.point_embeddings.0.weight': sam[name]})
-        if name == 'prompt_encoder.point_embeddings.3.weight':
+        elif name == 'prompt_encoder.point_embeddings.3.weight':
             diff_pre.update({'prompt_encoder.point_embeddings.1.weight': sam[name]})
         elif 'mask_decoder.output_hypernetworks_mlps.0' in name:
             new_name = name.replace('mask_decoder.output_hypernetworks_mlps.0', 'mask_decoder.output_hypernetworks_mlp')
             diff_pre.update({new_name: sam[name]})
+        # elif 'no_mask_embed' in name:
+        #     diff_pre.update({name: sam[name]})
         else:
             continue
     elif name in changed_modules:
-        diff_pre.update({name: sam[name][1].unsqueeze(0)})
+        diff_pre.update({name: sam[name][0].unsqueeze(0)})
     else:
         diff_pre.update({name: sam[name]})
 
-torch.save(diff_pre, 'pretrain/sam_pre_bbox_1.pth')
+torch.save(diff_pre, 'pretrain/sam_pre_bbox_0.pth')

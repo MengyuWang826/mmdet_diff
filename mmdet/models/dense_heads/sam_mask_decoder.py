@@ -278,6 +278,7 @@ class SamMaskDecoder(BaseModule):
         iou_head_depth,
         iou_head_hidden_dim,
         activation: Type[nn.Module] = nn.GELU,
+        multi_mask_output=False,
         init_cfg=None,
     ) -> None:
         """
@@ -300,9 +301,6 @@ class SamMaskDecoder(BaseModule):
         self.transformer_dim = transformer_dim
         self.transformer = TwoWayTransformer(**transformer)
 
-        self.iou_token = nn.Embedding(1, transformer_dim)
-        self.mask_tokens = nn.Embedding(1, transformer_dim)
-
         self.output_upscaling = nn.Sequential(
             nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
             LayerNorm2d(transformer_dim // 4),
@@ -310,9 +308,23 @@ class SamMaskDecoder(BaseModule):
             nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
             activation(),
         )
-        self.output_hypernetworks_mlp = MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+        self.iou_token = nn.Embedding(1, transformer_dim)
 
-        self.iou_prediction_head = MLP(transformer_dim, iou_head_hidden_dim, 1, iou_head_depth)
+        if not multi_mask_output:
+            self.mask_tokens = nn.Embedding(1, transformer_dim)
+            self.output_hypernetworks_mlp = MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+            self.iou_prediction_head = MLP(transformer_dim, iou_head_hidden_dim, 1, iou_head_depth)
+        else:
+            self.mask_tokens = nn.Embedding(4, transformer_dim)
+            self.output_hypernetworks_mlps = nn.ModuleList(
+                [
+                    MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+                    for i in range(4)
+                ]
+            )
+            self.iou_prediction_head = MLP(
+                transformer_dim, iou_head_hidden_dim, 4, iou_head_depth
+            )
 
     def forward(
         self,

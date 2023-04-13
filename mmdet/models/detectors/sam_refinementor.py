@@ -12,7 +12,7 @@ def uniform_sampler(num_steps, batch_size, device):
     indices = torch.from_numpy(indices_np).long().to(device)
     return indices      
 
-def mask2bboxcenter(input_masks, device, H, W, pad_width=5, scale_factor=4):
+def mask2bboxcenter(input_masks, device, H, W, pad_width=0, scale_factor=4):
     """Obtain tight bounding boxes of binary masks.
 
     Args:
@@ -54,7 +54,7 @@ class SamRefinementor(BaseDetector):
                  image_encoder,
                  prompt_encoder,
                  mask_decoder,
-                 diffusion_betas,
+                 diffusion_cfg,
                  train_cfg,
                  test_cfg,
                  mask_loss=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
@@ -68,12 +68,14 @@ class SamRefinementor(BaseDetector):
         self.mask_decoder =  build_head(mask_decoder)
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
-        self._diffusion_init(diffusion_betas)
+        self._diffusion_init(diffusion_cfg)
         self.mask_loss = build_loss(mask_loss)
         self.iou_loss = build_loss(iou_loss)
         self.num_classes = num_classes
     
-    def _diffusion_init(self, betas):
+    def _diffusion_init(self, diffusion_cfg):
+        self.diff_iter = diffusion_cfg['diff_iter']
+        betas = diffusion_cfg['betas']
         self.eps = 1.e-6
         self.betas_cumprod = np.linspace(
             betas['start'], betas['stop'], 
@@ -165,44 +167,51 @@ class SamRefinementor(BaseDetector):
 
     def simple_test(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
         """Test without augmentation."""
-        if len(coarse_masks[0]) > 0:
-            current_device = img.device
-            img_embddings = self.extract_feat(img)
+        current_device = img.device
+        img_embddings = self.extract_feat(img)
 
-            H, W = coarse_masks[0].height, coarse_masks[0].width
-            x_last = torch.tensor(coarse_masks[0].masks, device=current_device)
-            x = x_last.unsqueeze(1).float()
+        H, W = coarse_masks[0].height, coarse_masks[0].width
+        x_last = torch.tensor(coarse_masks[0].masks, device=current_device)
+        x = x_last.unsqueeze(1).float()
+        if self.diff_iter:
             cur_fine_probs = torch.zeros_like(x)
-
             indices = list(range(self.num_timesteps))[::-1]
             for i in indices:
                 bboxes, _ = mask2bboxcenter(x, current_device, H, W)
                 t = torch.tensor([i] * x.shape[0], device=current_device)
                 x, cur_fine_probs = self.p_sample(x, cur_fine_probs, t, bboxes, img_embddings)
-            ori_shape = img_metas[0]['ori_shape'][:2]
-            img_shape = img_metas[0]['img_shape'][:2]
-            pad_shape = img_metas[0]['pad_shape'][:2]
-            refine_mask = F.interpolate(x, size=pad_shape, mode="bilinear")
-            refine_mask = refine_mask[:, :, :img_shape[0], :img_shape[1]]
-            refine_mask = F.interpolate(refine_mask, size=ori_shape, mode="bilinear").squeeze(1)
-            refine_mask = (refine_mask >= 0).int()
-
-            x_last = F.interpolate(x_last.float().unsqueeze(1), size=pad_shape, mode="bilinear")
-            x_last = x_last[:, :, :img_shape[0], :img_shape[1]]
-            x_last = F.interpolate(x_last, size=ori_shape, mode="bilinear").squeeze(1)
-            x_last = x_last >= 0.5
-
-            refine_save(x_last, refine_mask)
-
-            dt_bboxes = dt_bboxes.cpu().numpy()
-            bboxes = dt_bboxes[0][:, :5]
-            labels = dt_bboxes[0][:, 5]
-            labels = labels.astype(int)
-            bbox_results = self._format_bboxes_results(bboxes, labels)
-            mask_results = self._format_mask_results(refine_mask, labels)
         else:
-            bbox_results = [np.zeros([0, 4]) for _ in range(self.num_classes)]
-            mask_results = [[] for _ in range(self.num_classes)]
+            bboxes, _ = mask2bboxcenter(x, current_device, H, W)
+            t = torch.tensor([0] * x.shape[0], device=current_device)
+            img_feats = torch.repeat_interleave(img_embddings, bboxes.shape[0], dim=0)
+            sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(bboxes, x, t)
+            x, iou_predictions = self.mask_decoder(
+                img_feats,
+                self.prompt_encoder.get_dense_pe(),
+                sparse_embeddings,
+                dense_embeddings,
+                time_embeddings)
+        ori_shape = img_metas[0]['ori_shape'][:2]
+        img_shape = img_metas[0]['img_shape'][:2]
+        pad_shape = img_metas[0]['pad_shape'][:2]
+        refine_mask = F.interpolate(x, size=pad_shape, mode="bilinear")
+        refine_mask = refine_mask[:, :, :img_shape[0], :img_shape[1]]
+        refine_mask = F.interpolate(refine_mask, size=ori_shape, mode="bilinear").squeeze(1)
+        refine_mask = (refine_mask >= 0).int()
+
+        x_last = F.interpolate(x_last.float().unsqueeze(1), size=pad_shape, mode="bilinear")
+        x_last = x_last[:, :, :img_shape[0], :img_shape[1]]
+        x_last = F.interpolate(x_last, size=ori_shape, mode="bilinear").squeeze(1)
+        x_last = x_last >= 0.5
+
+        refine_save(x_last, refine_mask)
+
+        dt_bboxes = dt_bboxes.cpu().numpy()
+        bboxes = dt_bboxes[0][:, :5]
+        labels = dt_bboxes[0][:, 5]
+        labels = labels.astype(int)
+        bbox_results = self._format_bboxes_results(bboxes, labels)
+        mask_results = self._format_mask_results(refine_mask, labels)
         return [(bbox_results, mask_results)]
 
     def p_sample(self, x, cur_fine_probs, t, bboxes, img_embddings):
