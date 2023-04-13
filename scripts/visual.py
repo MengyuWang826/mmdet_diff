@@ -67,9 +67,9 @@ def cal_iou(mask1, mask2):
 
 if __name__ == '__main__':
     data_root = 'data/coco/'
-    gt_json = 'data/refine_annotations/lvis_v1_val_cocofied.json'
+    gt_json = 'data/lvis_annotations/lvis_v1_val_cocofied.json'
     refine_json = 'results.segm.json'
-    coarse_json = 'coarse_part.json'
+    coarse_json = 'json_results/coarse_part.json'
     all_imgs = [397133, 37777, 252219, 174482]
     # [427, 640] [230, 352] [428, 640] [388, 640]
     gt = LVIS(gt_json)
@@ -109,14 +109,18 @@ if __name__ == '__main__':
             if cat_id in refine_dts[img_id] and cat_id in coarse_dts[img_id]:
                 gt_mask = _poly2mask(ann['segmentation'], img_h=h, img_w=w)
                 coarse_masks = coarse_dts[img_id][cat_id]
+                new_coarse_masks = []
+                for mask in coarse_masks:
+                    if mask.sum() >= 512:
+                        new_coarse_masks.append(mask)
                 refine_masks = refine_dts[img_id][cat_id]
-                ious = [cal_iou(gt_mask, _) for _ in coarse_masks]
+                ious = [cal_iou(gt_mask, _) for _ in new_coarse_masks]
                 max_iou = max(ious)
                 idx = ious.index(max_iou)
                 iou_f = cal_iou(gt_mask, refine_masks[idx])
                 iou_c = round(max_iou, 3)
                 iou_f = round(iou_f, 3)
-                filename=f'results_100/{img_id}_{ins_id}_c{iou_c}_f{iou_f}.png'
-                output_save(image, gt_mask, coarse_masks[idx], refine_masks[idx], filename=filename)
+                filename=f'results/{img_id}_{ins_id}_c{iou_c}_f{iou_f}.png'
+                output_save(image, gt_mask, new_coarse_masks[idx], refine_masks[idx], filename=filename)
 
     a = 1

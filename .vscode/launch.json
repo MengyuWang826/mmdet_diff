@@ -13,7 +13,10 @@
             // "args": ["configs/refine/bi_diff_r50_lvis.py",
             //          "--no-validate"],
             "args": ["configs/refine/bi_sam_diff_lvis.py",
-                     "--no-validate"],
+                     "work_dirs/bi_sam_diff_lvis/iter_70000.pth",
+                     "--eval", "segm"],
+            // "args": ["configs/refine/bi_sam_diff_lvis.py",
+            //          "--no-validate"],
             "justMyCode": true
         }
     ]
