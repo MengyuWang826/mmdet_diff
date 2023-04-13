@@ -151,4 +151,4 @@ evaluation = dict(
     interval=interval,
     metric=['bbox', 'segm'])
 
-resume_from = 'work_dirs/bi_sam_diff_lvis/iter_7000.pth'
+# resume_from = 'work_dirs/bi_sam_diff_lvis/iter_7000.pth'

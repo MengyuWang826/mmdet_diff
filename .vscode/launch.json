@@ -12,11 +12,11 @@
             "console": "integratedTerminal",
             // "args": ["configs/refine/bi_diff_r50_lvis.py",
             //          "--no-validate"],
-            "args": ["configs/refine/bi_sam_diff_lvis.py",
-                     "pretrain/sam_pre_bbox_0.pth",
-                     "--eval", "segm"],
             // "args": ["configs/refine/bi_sam_diff_lvis.py",
-            //          "--no-validate"],
+            //          "pretrain/sam_pre_bbox_0.pth",
+            //          "--eval", "segm"],
+            "args": ["configs/refine/bi_sam_diff_lvis.py",
+                     "--no-validate"],
             "justMyCode": true
         }
     ]

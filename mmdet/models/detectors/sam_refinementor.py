@@ -12,16 +12,7 @@ def uniform_sampler(num_steps, batch_size, device):
     indices = torch.from_numpy(indices_np).long().to(device)
     return indices      
 
-def mask2bboxcenter(input_masks, device, H, W, pad_width=0, scale_factor=4):
-    """Obtain tight bounding boxes of binary masks.
-
-    Args:
-        masks (Tensor): Binary mask of shape (n, h, w).
-
-    Returns:
-        Tensor: Bboxe with shape (n, 4) of \
-            positive region in binary mask.
-    """
+def mask2bboxcenter(input_masks, device, H, W, scale_factor=4):
     if isinstance(input_masks, np.ndarray):
         masks = torch.tensor(input_masks, dtype=torch.bool, device=device)
     elif isinstance(input_masks, torch.Tensor):
@@ -38,15 +29,11 @@ def mask2bboxcenter(input_masks, device, H, W, pad_width=0, scale_factor=4):
         if len(x) > 0 and len(y) > 0:
             bboxes[i, :] = bboxes.new_tensor(
                 [x[0], y[0], x[-1] + 1, y[-1] + 1])
-    bboxes[:, 0] = (bboxes[:, 0] - pad_width).clamp(min=0)
-    bboxes[:, 1] = (bboxes[:, 1] - pad_width).clamp(min=0)
-    bboxes[:, 2] = (bboxes[:, 2] + pad_width).clamp(max=W)
-    bboxes[:, 3] = (bboxes[:, 3] + pad_width).clamp(max=H)
     bboxes = bboxes * scale_factor
-    center_x = 0.5 * (bboxes[:, 0] + bboxes[:, 2])
-    center_y = 0.5 * (bboxes[:, 1] + bboxes[:, 3])
-    center_coors = torch.stack((center_x, center_y), dim=1)
-    return bboxes, center_coors
+    # center_x = 0.5 * (bboxes[:, 0] + bboxes[:, 2])
+    # center_y = 0.5 * (bboxes[:, 1] + bboxes[:, 3])
+    # center_coors = torch.stack((center_x, center_y), dim=1)
+    return bboxes
 
 @DETECTORS.register_module()
 class SamRefinementor(BaseDetector):
@@ -92,8 +79,8 @@ class SamRefinementor(BaseDetector):
                       coarse_masks):
         current_device = img.device
         img_embddings = self.extract_feat(img)
-        bboxes, x_start, x_last, img_ids = self._get_refine_input(gt_masks, coarse_masks, current_device)
-        img_feats = torch.zeros((bboxes.shape[0], img_embddings.shape[1], img_embddings.shape[2], img_embddings.shape[3]), device=current_device)
+        areas, x_start, x_last, img_ids = self._get_refine_input(gt_masks, coarse_masks, current_device)
+        img_feats = torch.zeros((areas.shape[0], img_embddings.shape[1], img_embddings.shape[2], img_embddings.shape[3]), device=current_device)
         for i in range(img_embddings.shape[0]):
             idx = img_ids == i
             img_feats[idx] = img_embddings[i]
@@ -138,20 +125,18 @@ class SamRefinementor(BaseDetector):
         return x
     
     def _get_refine_input(self, gt_masks, coarse_masks, current_device):
-        bboxes, x_start, x_last, img_ids = [], [], [], []
+        areas, x_start, x_last, img_ids = [], [], [], []
         img_id = 0
         for img_gt_masks, img_coarse_masks in zip(gt_masks, coarse_masks):
             assert len(img_gt_masks) == len(img_coarse_masks)
             num_ins = len(img_gt_masks)
             if num_ins > 0:
-                H, W = img_gt_masks.height, img_gt_masks.width
-                bbox, _ = mask2bboxcenter(img_coarse_masks.masks, current_device, H, W)
-                bboxes.append(bbox)
+                areas.append(img_coarse_masks.areas)
                 x_start.append(torch.tensor(img_gt_masks.masks, device=current_device))
                 x_last.append(torch.tensor(img_coarse_masks.masks, device=current_device))
                 img_ids.append(torch.tensor([img_id]*num_ins, device=current_device))
                 img_id += 1
-        bboxes = torch.cat(bboxes, dim=0)
+        areas = np.concatenate(areas, axis=0)
         x_start = torch.cat(x_start, dim=0)
         x_last = torch.cat(x_last, dim=0)
         img_ids = torch.cat(img_ids, dim=0)
@@ -159,11 +144,11 @@ class SamRefinementor(BaseDetector):
         # print(batch_size)
         if batch_size > 64:
             chosen_idx = np.random.choice(batch_size, size=32, replace=False)
-            bboxes = bboxes[chosen_idx]
+            areas = areas[chosen_idx]
             x_start = x_start[chosen_idx]
             x_last = x_last[chosen_idx]
             img_ids = img_ids[chosen_idx]
-        return bboxes, x_start, x_last, img_ids
+        return areas, x_start, x_last, img_ids
 
     def simple_test(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
         """Test without augmentation."""
