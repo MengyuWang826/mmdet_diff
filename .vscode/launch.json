@@ -13,7 +13,7 @@
             // "args": ["configs/refine/bi_diff_r50_lvis.py",
             //          "--no-validate"],
             // "args": ["configs/refine/bi_sam_diff_lvis.py",
-            //          "pretrain/sam_pre_bbox_0.pth",
+            //          "work_dirs/bi_sam_diff_lvis/epoch_1.pth",
             //          "--eval", "segm"],
             "args": ["configs/refine/bi_sam_diff_lvis.py",
                      "--no-validate"],

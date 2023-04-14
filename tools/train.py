@@ -2,7 +2,7 @@
 import argparse
 import copy
 import os
-# os.environ['CUDA_VISIBLE_DEVICES']='6'
+# os.environ['CUDA_VISIBLE_DEVICES']='3'
 import os.path as osp
 import time
 import warnings

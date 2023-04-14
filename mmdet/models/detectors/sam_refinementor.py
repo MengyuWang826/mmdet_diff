@@ -12,7 +12,7 @@ def uniform_sampler(num_steps, batch_size, device):
     indices = torch.from_numpy(indices_np).long().to(device)
     return indices      
 
-def mask2bboxcenter(input_masks, device, H, W, scale_factor=4):
+def mask2bboxcenter(input_masks, device, scale_factor=4):
     if isinstance(input_masks, np.ndarray):
         masks = torch.tensor(input_masks, dtype=torch.bool, device=device)
     elif isinstance(input_masks, torch.Tensor):
@@ -44,7 +44,7 @@ class SamRefinementor(BaseDetector):
                  diffusion_cfg,
                  train_cfg,
                  test_cfg,
-                 mask_loss=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
+                 mask_loss=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=5.0),
                  iou_loss=dict(type='MSELoss', loss_weight=1.0),
                  num_classes=77,
                  init_cfg=None):
@@ -86,7 +86,11 @@ class SamRefinementor(BaseDetector):
             img_feats[idx] = img_embddings[i]
         del img_embddings
         t = uniform_sampler(self.num_timesteps, x_start.shape[0], x_start.device)
-        x_t = self.q_sample(x_start, x_last, t, current_device)
+        x_t = self.q_sample(x_start, x_last, t, areas, current_device)
+
+        # mask_save(x_start, x_last, x_t)
+
+        bboxes = mask2bboxcenter(x_t, current_device)
         sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(bboxes, x_t, t)
         low_res_masks, iou_predictions = self.mask_decoder(
             img_feats,
@@ -102,13 +106,18 @@ class SamRefinementor(BaseDetector):
         losses['iou'] = iou_targets.mean()
         return losses
     
-    def q_sample(self, x_start, x_last, t, current_device):
+    def q_sample(self, x_start, x_last, t, areas, current_device):
         q_ori_probs = torch.tensor(self.betas_cumprod, device=current_device)
         q_ori_probs = q_ori_probs[t]
         q_ori_probs = q_ori_probs.reshape(-1, 1, 1)
         sample_noise = torch.rand(size=x_start.shape, device=current_device)
         transition_map = (sample_noise < q_ori_probs).float()
-        sample = transition_map * x_start + (1 - transition_map) * x_last
+        new_x_start = []
+        for x, area in zip(x_start, areas):
+            new_x_start.append(generate_block_target(x, area))
+        new_x_start = torch.stack(new_x_start, dim=0)
+        sample = transition_map * new_x_start + (1 - transition_map) * x_last
+        # quad_mask_save(x_start, x_last, new_x_start, sample)
         return sample.unsqueeze(1)
     
     @torch.no_grad()
@@ -131,7 +140,7 @@ class SamRefinementor(BaseDetector):
             assert len(img_gt_masks) == len(img_coarse_masks)
             num_ins = len(img_gt_masks)
             if num_ins > 0:
-                areas.append(img_coarse_masks.areas)
+                areas.append(img_gt_masks.areas)
                 x_start.append(torch.tensor(img_gt_masks.masks, device=current_device))
                 x_last.append(torch.tensor(img_coarse_masks.masks, device=current_device))
                 img_ids.append(torch.tensor([img_id]*num_ins, device=current_device))
@@ -152,6 +161,10 @@ class SamRefinementor(BaseDetector):
 
     def simple_test(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
         """Test without augmentation."""
+        if len(coarse_masks[0]) == 0:
+            bbox_results = [np.zeros([0, 4]) for _ in range(self.num_classes)]
+            mask_results = [[] for _ in range(self.num_classes)]
+            return [(bbox_results, mask_results)]
         current_device = img.device
         img_embddings = self.extract_feat(img)
 
@@ -162,11 +175,11 @@ class SamRefinementor(BaseDetector):
             cur_fine_probs = torch.zeros_like(x)
             indices = list(range(self.num_timesteps))[::-1]
             for i in indices:
-                bboxes, _ = mask2bboxcenter(x, current_device, H, W)
+                bboxes = mask2bboxcenter(x, current_device)
                 t = torch.tensor([i] * x.shape[0], device=current_device)
                 x, cur_fine_probs = self.p_sample(x, cur_fine_probs, t, bboxes, img_embddings)
         else:
-            bboxes, _ = mask2bboxcenter(x, current_device, H, W)
+            bboxes = mask2bboxcenter(x, current_device)
             t = torch.tensor([0] * x.shape[0], device=current_device)
             img_feats = torch.repeat_interleave(img_embddings, bboxes.shape[0], dim=0)
             sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(bboxes, x, t)
@@ -184,12 +197,12 @@ class SamRefinementor(BaseDetector):
         refine_mask = F.interpolate(refine_mask, size=ori_shape, mode="bilinear").squeeze(1)
         refine_mask = (refine_mask >= 0).int()
 
-        x_last = F.interpolate(x_last.float().unsqueeze(1), size=pad_shape, mode="bilinear")
-        x_last = x_last[:, :, :img_shape[0], :img_shape[1]]
-        x_last = F.interpolate(x_last, size=ori_shape, mode="bilinear").squeeze(1)
-        x_last = x_last >= 0.5
+        # x_last = F.interpolate(x_last.float().unsqueeze(1), size=pad_shape, mode="bilinear")
+        # x_last = x_last[:, :, :img_shape[0], :img_shape[1]]
+        # x_last = F.interpolate(x_last, size=ori_shape, mode="bilinear").squeeze(1)
+        # x_last = x_last >= 0.5
 
-        refine_save(x_last, refine_mask)
+        # refine_save(x_last, refine_mask)
 
         dt_bboxes = dt_bboxes.cpu().numpy()
         bboxes = dt_bboxes[0][:, :5]
@@ -252,6 +265,46 @@ class SamRefinementor(BaseDetector):
             cls_masks[labels[i]].append(masks[i])
         return cls_masks
 
+@torch.no_grad()
+def generate_block_target(mask, area):
+    expand_flag = np.random.rand(1)[0] <= 0.5
+    # width_frac = np.random.rand(1)
+    # boundary_width = max((int(np.sqrt(area) / 5 * width_frac[0]), 2))
+    boundary_width = max((int(np.sqrt(area) / 5), 2))
+    mask_target = mask.float().unsqueeze(0).unsqueeze(0)
+
+    # boundary region
+    kernel_size = 2 * boundary_width + 1
+    laplacian_kernel = - torch.ones(1, 1, kernel_size, kernel_size).to(
+        dtype=torch.float32, device=mask_target.device).requires_grad_(False)
+    laplacian_kernel[:, 0, boundary_width, boundary_width] = kernel_size ** 2 - 1
+
+    pad_target = F.pad(mask_target, (boundary_width, boundary_width, boundary_width, boundary_width), "constant", 0)
+
+    # pos_boundary
+    pos_boundary_targets = F.conv2d(pad_target, laplacian_kernel, padding=0)
+    pos_boundary_targets = pos_boundary_targets.clamp(min=0) / float(kernel_size ** 2)
+    pos_boundary_targets[pos_boundary_targets > 0.1] = 1
+    pos_boundary_targets[pos_boundary_targets <= 0.1] = 0
+    pos_boundary_targets = pos_boundary_targets
+
+    # neg_boundary
+    neg_boundary_targets = F.conv2d(1 - pad_target, laplacian_kernel, padding=0)
+    neg_boundary_targets = neg_boundary_targets.clamp(min=0) / float(kernel_size ** 2)
+    neg_boundary_targets[neg_boundary_targets > 0.1] = 1
+    neg_boundary_targets[neg_boundary_targets <= 0.1] = 0
+    neg_boundary_targets = neg_boundary_targets
+
+    # generate block target
+    block_target = torch.zeros_like(mask_target).float().requires_grad_(False)
+    if expand_flag:
+        boundary_inds = (pos_boundary_targets + neg_boundary_targets + mask_target) > 0
+    else:
+        boundary_inds = (mask_target - pos_boundary_targets) > 0
+    block_target[boundary_inds] = 1
+    block_target = block_target.squeeze(0).squeeze(0)
+    return block_target
+
 def mask_save(gt, coarse, refine):
     refine = refine.squeeze(1)
     gt = gt.cpu().numpy().astype(np.uint8)
@@ -265,6 +318,23 @@ def mask_save(gt, coarse, refine):
         empty = np.zeros_like(gt_mask)
         out1 = np.concatenate((gt_mask, coarse_mask), axis=0)
         out2 = np.concatenate((refine_mask, empty), axis=0)
+        out = np.concatenate((out1, out2), axis=1)
+        Image.fromarray(out).save(f'results/{idx}.png')
+        idx += 1
+
+def quad_mask_save(gt, coarse, new_gt, q_sample):
+    gt = gt.cpu().numpy().astype(np.uint8)
+    gt = gt * 255
+    coarse = coarse.cpu().numpy().astype(np.uint8)
+    coarse = coarse * 255
+    new_gt = new_gt.cpu().numpy().astype(np.uint8)
+    new_gt = new_gt * 255
+    q_sample = q_sample.cpu().numpy().astype(np.uint8)
+    q_sample = q_sample * 255
+    idx = 0
+    for gt_mask, coarse_mask, nre_gt_mask, q in zip(gt, coarse, new_gt, q_sample):
+        out1 = np.concatenate((gt_mask, coarse_mask), axis=0)
+        out2 = np.concatenate((nre_gt_mask, q), axis=0)
         out = np.concatenate((out1, out2), axis=1)
         Image.fromarray(out).save(f'results/{idx}.png')
         idx += 1

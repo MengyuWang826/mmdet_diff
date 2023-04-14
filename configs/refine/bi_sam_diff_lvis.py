@@ -42,10 +42,10 @@ model = dict(
     diffusion_cfg=dict(
         betas=dict(
             type='linear',
-            start=1-1e-3,  # 1e-4 gauss, 0.02 uniform
+            start=0.8,  # 1e-4 gauss, 0.02 uniform
             stop=0,  # 0.02, gauss, 1. uniform
             num_timesteps=6),
-        diff_iter=False),
+        diff_iter=True),
     # model training and testing settings
     train_cfg=dict(
         pad_width=20),
@@ -80,8 +80,8 @@ dataset_type = 'LVISRefine'
 img_root = 'data/coco/'
 ann_root = 'data/lvis_annotations/'
 train_dataloader=dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2)
+    samples_per_gpu=4,
+    workers_per_gpu=4)
 test_dataloader=dict(
     samples_per_gpu=1,
     workers_per_gpu=1)
@@ -112,43 +112,41 @@ evaluation = dict(metric=['bbox', 'segm'])
 
 optimizer = dict(
     type='AdamW',
-    lr=5e-5,
+    lr=1e-5,
     weight_decay=0,
     eps=1e-8,
-    betas=(0.9, 0.999),
-    paramwise_cfg=dict(
-        custom_keys={
-            'prompt_encoder': dict(lr_mult=10)
-        }))
+    betas=(0.9, 0.999))
+    # paramwise_cfg=dict(
+    #     custom_keys={
+    #         'prompt_encoder': dict(lr_mult=10)
+    #     }))
 optimizer_config = dict(grad_clip=None)
 
 # learning policy
 lr_config = dict(
     policy='step',
     gamma=0.1,
-    by_epoch=False,
-    step=[50000, 80000],
+    step=[8, 11],
     warmup='linear',
     warmup_by_epoch=False,
     warmup_ratio=0.01,  # no warmup
     warmup_iters=150)
 
-max_iters = 100000
-runner = dict(type='IterBasedRunner', max_iters=max_iters)
+
+runner = dict(type='EpochBasedRunner', max_epochs=12)
 
 log_config = dict(
     interval=50,
     hooks=[
-        dict(type='TextLoggerHook', by_epoch=False),
+        dict(type='TextLoggerHook'),
         # dict(type='TensorboardLoggerHook', by_epoch=False)
     ])
-interval = 5000
-workflow = [('train', interval)]
-checkpoint_config = dict(
-    by_epoch=False, interval=interval, save_last=True, max_keep_ckpts=40)
+
+workflow = [('train', 1)]
+checkpoint_config = dict(interval=1)
 
 evaluation = dict(
-    interval=interval,
+    interval=1,
     metric=['bbox', 'segm'])
 
-# resume_from = 'work_dirs/bi_sam_diff_lvis/iter_7000.pth'
+load_from = 'pretrain/sam_pre_bbox_0.pth'
