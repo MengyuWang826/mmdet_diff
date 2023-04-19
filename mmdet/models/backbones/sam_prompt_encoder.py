@@ -105,14 +105,12 @@ class SamPromptEncoder(BaseModule):
             activation(),
             nn.Conv2d(mask_in_chans, embed_dim, kernel_size=1),
         )
-        if not sam_zero_shot:
-            self.time_embed = nn.Sequential(
-                nn.Linear(embed_dim, embed_dim),
-                nn.SiLU(),
-                zero_module(nn.Linear(embed_dim, embed_dim))
-            )
-        else:
-            self.no_mask_embed = nn.Embedding(1, embed_dim)
+        self.time_embed = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.SiLU(),
+            zero_module(nn.Linear(embed_dim, embed_dim))
+        )
+        self.no_mask_embed = nn.Embedding(1, embed_dim)
 
     def get_dense_pe(self) -> torch.Tensor:
         """

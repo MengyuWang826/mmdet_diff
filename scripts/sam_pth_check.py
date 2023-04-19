@@ -1,7 +1,7 @@
 import torch
 
 sam_pth = 'checkpoints/sam/sam_vit_b_01ec64.pth'
-diff_pth = 'work_dirs/bi_sam_diff_lvis/iter_1.pth'
+diff_pth = 'work_dirs/bi_sam_diff_lvis/epoch_1.pth'
 
 sam = torch.load(sam_pth, map_location=torch.device('cpu'))
 diff = torch.load(diff_pth, map_location=torch.device('cpu'))['state_dict']

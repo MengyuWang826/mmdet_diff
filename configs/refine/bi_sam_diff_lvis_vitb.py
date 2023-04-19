@@ -28,7 +28,8 @@ model = dict(
         embed_dim=prompt_embed_dim,
         input_image_size=(image_size, image_size),
         image_embedding_size=(image_embedding_size, image_embedding_size),
-        mask_in_chans=16),
+        mask_in_chans=16,
+        sam_zero_shot=True),
     mask_decoder=dict(
         type='SamMaskDecoder',
         transformer=dict(
@@ -38,14 +39,15 @@ model = dict(
             num_heads=8),
         transformer_dim=prompt_embed_dim,
         iou_head_depth=3,
-        iou_head_hidden_dim=256),
+        iou_head_hidden_dim=256,
+        multi_mask_output=True),
     diffusion_cfg=dict(
         betas=dict(
             type='linear',
             start=0.8,  # 1e-4 gauss, 0.02 uniform
             stop=0,  # 0.02, gauss, 1. uniform
             num_timesteps=6),
-        diff_iter=True),
+        diff_iter=False),
     # model training and testing settings
     train_cfg=dict(
         pad_width=20),
@@ -112,14 +114,14 @@ evaluation = dict(metric=['bbox', 'segm'])
 
 optimizer = dict(
     type='AdamW',
-    lr=1e-5,
+    lr=1e-6,
     weight_decay=0,
     eps=1e-8,
-    betas=(0.9, 0.999))
-    # paramwise_cfg=dict(
-    #     custom_keys={
-    #         'prompt_encoder': dict(lr_mult=10)
-    #     }))
+    betas=(0.9, 0.999),
+    paramwise_cfg=dict(
+        custom_keys={
+            'prompt_encoder': dict(lr_mult=10)
+        }))
 optimizer_config = dict(grad_clip=None)
 
 # learning policy

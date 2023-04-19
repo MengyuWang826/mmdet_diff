@@ -317,7 +317,7 @@ class QKVAttention(nn.Module):
 
 
 @HEADS.register_module()
-class DenoiseUNetHead(BaseModule):
+class DenoiseUNet(nn.Module):
     """
     The full UNet model with attention and timestep embedding.
     :param in_channels: channels in the input Tensor.
@@ -352,13 +352,11 @@ class DenoiseUNetHead(BaseModule):
         dims=2,
         num_heads=1,
         num_heads_upsample=-1,
-        num_classes=0,
         return_logits=False,
         use_scale_shift_norm=False,
         **kwargs
     ):
         super().__init__()
-
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
         
@@ -382,7 +380,6 @@ class DenoiseUNetHead(BaseModule):
             linear(time_embed_dim, time_embed_dim),
         )
 
-        self.num_classes = num_classes
         # self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
         self.input_blocks = nn.ModuleList()
@@ -475,14 +472,7 @@ class DenoiseUNetHead(BaseModule):
                 nn.SiLU(),
                 zero_module(conv_nd(dims, model_channels//2, out_channels, 3, padding=1)))
 
-    @property
-    def inner_dtype(self):
-        """
-        Get the dtype used by the torso of the model.
-        """
-        return next(self.input_blocks.parameters()).dtype
-
-    def forward(self, x, timesteps, coarse_masks, img_feats, labels, idx2batch):
+    def forward(self, x, timesteps):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -490,62 +480,13 @@ class DenoiseUNetHead(BaseModule):
         :param y: an [N] Tensor of labels, if class-conditional.
         :return: an [N x C x ...] Tensor of outputs.
         """
-
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        emb = emb + self.label_emb(labels)
-        x = th.cat((x, coarse_masks), dim=1)
-        
         hs = []
-        h = x.type(self.inner_dtype)
-        prev_size = h.shape[-2:]
-        idx = 0
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         for module in self.input_blocks:
             h = module(h, emb)
-            current_size = h.shape[-2:]
-            if current_size != prev_size:
-                if idx < 4:
-                    for i in idx2batch:
-                        h[i] = h[i] + img_feats[idx][idx2batch[i]]
-                idx += 1
-                prev_size = current_size
             hs.append(h)
         h = self.middle_block(h, emb)
         for module in self.output_blocks:
             cat_in = th.cat([h, hs.pop()], dim=1)
             h = module(cat_in, emb)
-        h = h.type(x.dtype)
-        if self.return_logits:
-            return h
-        else:
-            return self.out(h)
-
-    # def get_feature_vectors(self, x, timesteps, y=None):
-    #     """
-    #     Apply the model and return all of the intermediate tensors.
-    #     :param x: an [N x C x ...] Tensor of inputs.
-    #     :param timesteps: a 1-D batch of timesteps.
-    #     :param y: an [N] Tensor of labels, if class-conditional.
-    #     :return: a dict with the following keys:
-    #              - 'down': a list of hidden state tensors from downsampling.
-    #              - 'middle': the tensor of the output of the lowest-resolution
-    #                          block in the model.
-    #              - 'up': a list of hidden state tensors from upsampling.
-    #     """
-    #     hs = []
-    #     emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-    #     if self.num_classes is not None:
-    #         assert y.shape == (x.shape[0],)
-    #         emb = emb + self.label_emb(y)
-    #     result = dict(down=[], up=[])
-    #     h = x.type(self.inner_dtype)
-    #     for module in self.input_blocks:
-    #         h = module(h, emb)
-    #         hs.append(h)
-    #         result["down"].append(h.type(x.dtype))
-    #     h = self.middle_block(h, emb)
-    #     result["middle"] = h.type(x.dtype)
-    #     for module in self.output_blocks:
-    #         cat_in = th.cat([h, hs.pop()], dim=1)
-    #         h = module(cat_in, emb)
-    #         result["up"].append(h.type(x.dtype))
-    #     return result
+        return self.out(h)

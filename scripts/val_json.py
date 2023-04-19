@@ -8,6 +8,6 @@ def val_bnd(result_path, ann_path, val_type):
 
 
 if __name__ =='__main__':
-    gt_json = 'data/refine_annotations/lvis_v1_val_cocofied.json'
-    dt_json = 'refine_paste_tiny.json'
-    a = val_bnd(dt_json, gt_json, 'boundary')
+    gt_json = 'data/lvis_annotations/lvis_v1_val_cocofied.json'
+    dt_json = 'json_results/refine_paste_tiny.json'
+    a = val_bnd(dt_json, gt_json, 'segm')

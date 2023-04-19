@@ -44,7 +44,7 @@ from .yolact_head import YOLACTHead, YOLACTProtonet, YOLACTSegmHead
 from .yolo_head import YOLOV3Head
 from .yolof_head import YOLOFHead
 from .yolox_head import YOLOXHead
-from .diffusion_unet_head import DenoiseUNetHead
+from .diffusion_unet_head import DenoiseUNet
 from .denoise_dit_head import DenoiseDiTHead
 from .sam_mask_decoder import SamMaskDecoder
 
@@ -61,6 +61,6 @@ __all__ = [
     'DecoupledSOLOHead', 'CenterNetHead', 'YOLOXHead',
     'DecoupledSOLOLightHead', 'LADHead', 'TOODHead', 'MaskFormerHead',
     'Mask2FormerHead', 'SOLOV2Head', 'DDODHead', 'AscendAnchorHead',
-    'AscendRetinaHead', 'AscendSSDHead', 'DenoiseUNetHead',
+    'AscendRetinaHead', 'AscendSSDHead', 'DenoiseUNet',
     'DenoiseDiTHead', 'SamMaskDecoder'
 ]

@@ -3,95 +3,66 @@ _base_ = [
 ]
 
 model = dict(
-    type='Refinementor',
-    backbone=dict(
-        type='ResNet',
-        depth=50,
-        num_stages=4,
-        out_indices=(0, 1, 2, 3),
-        out_low_level=True,
-        frozen_stages=-1,
-        norm_cfg=dict(type='BN', requires_grad=True),
-        norm_eval=True,
-        style='pytorch',
-        init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet50')),
-    neck=dict(
-        type='FPN',
-        in_channels=[256, 512, 1024, 2048],
-        out_channels=256,
-        num_outs=4),
-    roi_head=dict(
-        type='DiffusionMergeRoIHead',
-        mask_roi_extractor=dict(
-            type='MySingleRoIExtractor',
-            roi_layer=dict(type='RoIAlign', output_size=224, sampling_ratio=0),
-            out_channels=256,
-            featmap_strides=[4, 8, 16, 32]),
-        mask_head=dict(
-            type='RoIUNetHead',
-            in_channels=321,
-            out_channels=1,
-            model_channels=128,
-            num_res_blocks=2,
-            num_heads=4,
-            num_heads_upsample=-1,
-            attention_strides=(16, 32),
-            learn_time_embd=False,
-            channel_mult = (1, 1, 2, 2, 4, 4),
-            dropout=0.0,
-            num_classes=80,
-            use_checkpoint=False,
-            loss_mask=dict(
-                type='CrossEntropyLoss', use_sigmoid=True)),
-        diffusion=dict(
-            num_pixel_vals=2,
-            betas=dict(
-                type='linear',
-                start=1-1e-3,  # 1e-4 gauss, 0.02 uniform
-                stop=0,  # 0.02, gauss, 1. uniform
-                num_timesteps=20)),
-        pad_width=20),
+    type='DiffRefinementor',
+    denoise_model=dict(
+        type='DenoiseUNet',
+        in_channels=4,
+        out_channels=1,
+        model_channels=128,
+        num_res_blocks=2,
+        num_heads=4,
+        num_heads_upsample=-1,
+        attention_strides=(16, 32),
+        learn_time_embd=False,
+        channel_mult = (1, 1, 2, 2, 4, 4),
+        dropout=0.0,
+        use_checkpoint=False),
+    diffusion_cfg=dict(
+        betas=dict(
+            type='linear',
+            start=0.8,  # 1e-4 gauss, 0.02 uniform
+            stop=0,  # 0.02, gauss, 1. uniform
+            num_timesteps=6),
+        diff_iter=False),
     # model training and testing settings
     train_cfg=dict(
-        rcnn=dict(
-            mask_size=224,
-            pos_weight=-1,
-            debug=False)),
+        pad_width=20),
     test_cfg=dict(
-        rcnn=dict(
-            mask_size=224)))  
+        pad_width=20))  
 
-image_size = (1024, 1024)
+object_size = 256
+patch_size = 128
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=False, with_label=False, with_mask=True),
-    dict(type='LoadCoarseMasks', with_label=False),
-    dict(type='Resize', img_scale=image_size, keep_ratio=True),
+    dict(type='LoadCoarseMasksNew'),
+    dict(type='LoadPatchData', object_size=object_size, patch_size=patch_size),
+    dict(type='Resize', img_scale=(object_size, object_size), keep_ratio=True),
     dict(type='RandomFlip', flip_ratio=0.5),
     dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size=image_size, img_only=True),
     dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'gt_masks', 'coarse_masks'])]
+    dict(type='Collect', keys=['object_img', 'object_gt_masks', 'object_coarse_masks',
+                               'patch_img', 'patch_gt_masks', 'patch_coarse_masks'])]
 
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadCoarseMasks', with_bbox=True, test_mode=True),
-    dict(type='Resize', img_scale=image_size, keep_ratio=True),
+    dict(type='Resize', img_scale=object_size, keep_ratio=True),
     dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size=image_size),
+    dict(type='Pad', size=object_size),
     dict(type='DefaultFormatBundle'),
     dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
 ]
 
 
-dataset_type = 'LVISRefine'
-img_root = 'data/coco/'
+dataset_type = 'CollectionRefine'
+img_root = 'data/'
 ann_root = 'data/lvis_annotations/'
 train_dataloader=dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2)
+    samples_per_gpu=1,
+    workers_per_gpu=1)
 test_dataloader=dict(
     samples_per_gpu=1,
     workers_per_gpu=1)
@@ -101,20 +72,22 @@ data = dict(
         type=dataset_type,
         ann_file=ann_root + 'lvis_v1_train.json',
         coarse_file=ann_root + 'maskrcnn_lvis_train_matched.json',
+        collection_datasets=['dut', 'ecssd', 'fss', 'msra'],
+        collection_json=img_root + 'collection.json',
         img_prefix=img_root),
     train_dataloader=train_dataloader,
     val=dict(
         pipeline=test_pipeline,
         type=dataset_type,
         ann_file=ann_root + 'lvis_v1_val_cocofied.json',
-        coarse_file='all_json/coarse_json_cocofied/transfiner_r50_3x_deform_cocofied.json',
+        coarse_file=ann_root + 'maskrcnn_lvis_val_cocofied.json',
         img_prefix=img_root),
     val_dataloader=test_dataloader,
     test=dict(
         pipeline=test_pipeline,
         type=dataset_type,
         ann_file=ann_root + 'lvis_v1_val_cocofied.json',
-        coarse_file= ann_root + 'maskrcnn_lvis_val_cocofied.json',
+        coarse_file=ann_root + 'maskrcnn_lvis_val_cocofied.json',
         img_prefix=img_root),
     test_dataloader=test_dataloader)
 evaluation = dict(metric=['bbox', 'segm'])

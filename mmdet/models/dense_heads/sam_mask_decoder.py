@@ -310,8 +310,10 @@ class SamMaskDecoder(BaseModule):
         )
         self.iou_token = nn.Embedding(1, transformer_dim)
 
+        self.multi_mask_output = multi_mask_output
+
         if not multi_mask_output:
-            self.mask_tokens = nn.Embedding(1, transformer_dim)
+            self.mask_tokens = nn.Embedding(4, transformer_dim)
             self.output_hypernetworks_mlp = MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
             self.iou_prediction_head = MLP(transformer_dim, iou_head_hidden_dim, 1, iou_head_depth)
         else:
@@ -384,16 +386,27 @@ class SamMaskDecoder(BaseModule):
         # Run the transformer
         hs, src = self.transformer(src, pos_src, tokens)
         iou_token_out = hs[:, 0, :]
-        mask_tokens_out = hs[:, 1, :]
-
-        # Upscale mask embeddings and predict masks using the mask tokens
         src = src.transpose(1, 2).view(b, c, h, w)
         upscaled_embedding = self.output_upscaling(src)
-        hyper_in = self.output_hypernetworks_mlp(mask_tokens_out).unsqueeze(1)
         b, c, h, w = upscaled_embedding.shape
-        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
+        if self.multi_mask_output:
+            mask_tokens_out = hs[:, 1 : 5, :]
+            # Upscale mask embeddings and predict masks using the mask tokens
+            
+            hyper_in_list: List[torch.Tensor] = []
+            for i in range(4):
+                hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]))
+            hyper_in = torch.stack(hyper_in_list, dim=1)
+            masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
 
-        # Generate mask quality predictions
+            # Generate mask quality predictions
+        else:
+            mask_tokens_out = hs[:, 1, :]
+            # Upscale mask embeddings and predict masks using the mask tokens
+            hyper_in = self.output_hypernetworks_mlp(mask_tokens_out).unsqueeze(1)
+            masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
+
+            # Generate mask quality predictions
         iou_pred = self.iou_prediction_head(iou_token_out)
 
         return masks, iou_pred

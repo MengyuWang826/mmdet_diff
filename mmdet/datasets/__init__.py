@@ -21,6 +21,7 @@ from .lvis_refine import LVISRefine
 from .coco_refine import CocoRefine
 from .coco_refine_binary import CocoRefineBinary
 from .coco_refine_down import CocoRefineDown
+from .collection_refine import CollectionRefine
 
 __all__ = [
     'CustomDataset', 'XMLDataset', 'CocoDataset', 'DeepFashionDataset',
@@ -32,5 +33,5 @@ __all__ = [
     'NumClassCheckHook', 'CocoPanopticDataset', 'MultiImageMixDataset',
     'OpenImagesDataset', 'OpenImagesChallengeDataset', 'Objects365V1Dataset',
     'Objects365V2Dataset', 'OccludedSeparatedCocoDataset', 'LVISRefine',
-    'CocoRefine', 'CocoRefineBinary', 'CocoRefineDown'
+    'CocoRefine', 'CocoRefineBinary', 'CocoRefineDown', 'CollectionRefine'
 ]
