@@ -1,8 +1,10 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import os.path as osp
-
+import cv2
 import mmcv
 import numpy as np
+import random
+import math
 import torch
 import torch.nn.functional as F
 import pycocotools.mask as maskUtils
@@ -14,6 +16,8 @@ try:
     from panopticapi.utils import rgb2id
 except ImportError:
     rgb2id = None
+
+from PIL import Image
 
 
 @PIPELINES.register_module()
@@ -344,16 +348,17 @@ class LoadAnnotations:
                 If ``self.poly2mask`` is set ``True``, `gt_mask` will contain
                 :obj:`PolygonMasks`. Otherwise, :obj:`BitmapMasks` is used.
         """
-
         h, w = results['img_info']['height'], results['img_info']['width']
-        gt_masks = results['ann_info']['masks']
-        if self.poly2mask:
-            gt_masks = BitmapMasks(
-                [self._poly2mask(mask, h, w) for mask in gt_masks], h, w)
+        if 'maskname' in results['ann_info']:
+            filename = osp.join(results['img_prefix'], results['ann_info']['maskname'])
+            mask = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
+            assert mask is not None
+            mask = mask.astype(np.float32) / 255
+            mask = (mask >= 0.5).astype(np.uint8)
+            gt_masks = BitmapMasks([mask], h, w)
         else:
-            gt_masks = PolygonMasks(
-                [self.process_polygons(polygons) for polygons in gt_masks], h,
-                w)
+            gt_masks = results['ann_info']['masks']
+            gt_masks = BitmapMasks([self._poly2mask(gt_masks, h, w)], h, w)
         results['gt_masks'] = gt_masks
         results['mask_fields'].append('gt_masks')
         return results
@@ -735,6 +740,161 @@ class LoadCoarseMasks:
             results['dt_labels'] = results['coarse_info']['labels']
         return results
 
+@PIPELINES.register_module()
+class LoadCoarseMasksNew:
+    def __init__(self,
+                 with_bbox=False,
+                 test_mode=False,
+                 area_thr=0):
+        self.test_mode = test_mode
+        self.area_thr = area_thr
+        self.with_bbox = with_bbox
+    
+    def _poly2mask(self, mask_ann, img_h, img_w):
+        """Private function to convert masks represented with polygon to
+        bitmaps.
+
+        Args:
+            mask_ann (list | dict): Polygon mask annotation input.
+            img_h (int): The height of output mask.
+            img_w (int): The width of output mask.
+
+        Returns:
+            numpy.ndarray: The decode bitmap mask of shape (img_h, img_w).
+        """
+
+        if isinstance(mask_ann, list):
+            # polygon -- a single object might consist of multiple parts
+            # we merge all parts into one mask rle code
+            rles = maskUtils.frPyObjects(mask_ann, img_h, img_w)
+            rle = maskUtils.merge(rles)
+        elif isinstance(mask_ann['counts'], list):
+            # uncompressed RLE
+            rle = maskUtils.frPyObjects(mask_ann, img_h, img_w)
+        else:
+            # rle
+            rle = mask_ann
+        mask = maskUtils.decode(rle)
+        return mask
+
+    def __call__(self, results):
+        h, w = results['img_info']['height'], results['img_info']['width']
+        coarse_masks = results['coarse_info']['masks']
+        if not self.test_mode:
+            if coarse_masks is not None:
+                coarse_masks = self._poly2mask(coarse_masks, h, w)
+            else:
+                gt_mask = (results['gt_masks'].masks[0] * 255).astype(np.uint8)
+                coarse_masks = modify_boundary(gt_mask)
+                # Image.fromarray(gt_mask).save(f'results/gt.png')
+                # Image.fromarray(coarse_masks).save(f'results/modify.png')
+            results['coarse_masks'] = BitmapMasks([coarse_masks], h, w)
+        else:
+            new_coarse_masks = []
+            for mask in coarse_masks:
+                new_coarse_masks.append(self._poly2mask(mask, h, w))
+            if self.area_thr:
+                new_coarse_masks = BitmapMasks(new_coarse_masks, h, w)
+                areas = new_coarse_masks.areas
+                valid_idx = areas >= self.area_thr
+                new_coarse_masks = new_coarse_masks.masks[valid_idx]
+
+        results['mask_fields'].append('coarse_masks')
+        if self.with_bbox:
+            results['dt_bboxes'] = results['coarse_info']['bboxes'][valid_idx]
+        return results
+
+@PIPELINES.register_module()
+class LoadPatchData:
+    def __init__(self,
+                 object_size,
+                 patch_size,
+                 pad_size=20):
+        self.object_size = object_size
+        self.patch_size = patch_size
+        self.pad_size = pad_size
+
+    def _mask2bbox(self, mask):
+        x_any = mask.any(axis=0)
+        y_any = mask.any(axis=1)
+        x = np.where(x_any)[0]
+        y = np.where(y_any)[0]
+        x_1, x_2 = x[0], x[-1] + 1
+        y_1, y_2 = y[0], y[-1] + 1
+        return x_1, y_1, x_2, y_2
+    
+    def _get_object_crop_coor(self, x_1, x_2, w, object_size):
+        x_start = int(max(object_size/2, x_2 - object_size/2))
+        x_end = int(min(x_1 + object_size/2, w - object_size/2))
+        x_c = np.random.randint(x_start, x_end + 1)
+        x_1_ob = max(int(x_c - object_size/2), 0)
+        x_2_ob = min(int(x_c + object_size/2), w)
+        return x_1_ob, x_2_ob
+    
+    def ramdom_crop_object(self, results):
+        h, w = results['img_shape'][:2]
+        x_1, y_1, x_2, y_2 = self._mask2bbox(results['gt_masks'].masks[0])
+        object_h, object_w = y_2 - y_1, x_2 - x_1
+        if object_h > self.object_size or object_w > self.object_size:
+            object_size = max(object_h, object_w) + self.pad_size
+        else:
+            object_size = self.object_size
+        if h < object_size or w < object_size:
+            results['object_img'] = results['img']
+            results['object_gt_masks'] = results['gt_masks']
+            results['object_coarse_masks'] = results['coarse_masks']
+        else:
+            x_1_ob, x_2_ob = self._get_object_crop_coor(x_1, x_2, w, object_size)
+            y_1_ob, y_2_ob = self._get_object_crop_coor(y_1, y_2, h, object_size)
+            results['object_img'] = results['img'][y_1_ob: y_2_ob, x_1_ob: x_2_ob, :]
+            object_gt_mask = results['gt_masks'].masks[:, y_1_ob: y_2_ob, x_1_ob: x_2_ob]
+            results['object_gt_masks'] = BitmapMasks(object_gt_mask, object_gt_mask.shape[-2], object_gt_mask.shape[-1])
+            object_coarse_mask = results['coarse_masks'].masks[:, y_1_ob: y_2_ob, x_1_ob: x_2_ob]
+            results['object_coarse_masks'] = BitmapMasks(object_coarse_mask, object_coarse_mask.shape[-2], object_coarse_mask.shape[-1])
+        return results
+    
+    def _get_patch_crop_coor(self, results):
+        h, w = results['object_gt_masks'].height, results['object_gt_masks'].width
+        if h < self.patch_size or w < self.patch_size:
+            patch_size = int(min(h, w) / 2)
+        else:
+            patch_size = self.patch_size
+        margin_h = max(h - patch_size, 0)
+        margin_w = max(w - patch_size, 0)
+        offset_h = np.random.randint(0, margin_h + 1)
+        offset_w = np.random.randint(0, margin_w + 1)
+        x_1_pt, x_2_pt = offset_w, offset_w + patch_size
+        y_1_pt, y_2_pt = offset_h, offset_h + patch_size
+        return x_1_pt, y_1_pt, x_2_pt, y_2_pt
+    
+    def ramdom_crop_patch(self, results):
+        while True:
+            x_1_pt, y_1_pt, x_2_pt, y_2_pt = self._get_patch_crop_coor(results)
+            patch_gt_mask = results['object_gt_masks'].masks[:, y_1_pt: y_2_pt, x_1_pt: x_2_pt]
+            if patch_gt_mask.sum() != 0:
+                results['patch_gt_masks'] = BitmapMasks(patch_gt_mask, patch_gt_mask.shape[-2], patch_gt_mask.shape[-1])
+                results['patch_img'] = results['object_img'][y_1_pt: y_2_pt, x_1_pt: x_2_pt, :]
+                patch_coarse_mask = modify_boundary(patch_gt_mask[0] * 255)
+                results['patch_coarse_masks'] = BitmapMasks([patch_coarse_mask], patch_coarse_mask.shape[-2], patch_coarse_mask.shape[-1])
+                return results
+
+    def __call__(self, results):
+        results = self.ramdom_crop_object(results)
+        results = self.ramdom_crop_patch(results)
+        del results['coarse_info']
+        del results['ann_info']
+        del results['mask_fields']
+        results['mask_fields'] = ['object_gt_masks', 'object_coarse_masks', 'patch_gt_masks', 'patch_coarse_masks']
+        del results['img']
+        results['img_shape'] = results['object_img'].shape
+        results['ori_shape'] = results['object_img'].shape
+        results['patch_shape'] = results['patch_img'].shape
+        del results['img_fields']
+        results['img_fields'] = ['object_img', 'patch_img']
+        del results['gt_masks']
+        del results['coarse_masks']
+        return results
+
 def generate_block_target(mask, area):
     boundary_width = max((int(np.sqrt(area) / 10), 2))
     mask_target = torch.tensor(mask, dtype=torch.float32, device='cpu').unsqueeze(0).unsqueeze(0)
@@ -768,3 +928,152 @@ def generate_block_target(mask, area):
     block_target = block_target.squeeze(0).squeeze(0)
     block_target = block_target.numpy().astype(np.uint8)
     return block_target
+
+def get_random_structure(size):
+    # The provided model is trained with 
+    #   choice = np.random.randint(4)
+    # instead, which is a bug that we fixed here
+    choice = np.random.randint(1, 5)
+
+    if choice == 1:
+        return cv2.getStructuringElement(cv2.MORPH_RECT, (size, size))
+    elif choice == 2:
+        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+    elif choice == 3:
+        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size//2))
+    elif choice == 4:
+        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size//2, size))
+
+def random_dilate(seg, min=3, max=10):
+    size = np.random.randint(min, max)
+    kernel = get_random_structure(size)
+    seg = cv2.dilate(seg,kernel,iterations = 1)
+    return seg
+
+def random_erode(seg, min=3, max=10):
+    size = np.random.randint(min, max)
+    kernel = get_random_structure(size)
+    seg = cv2.erode(seg,kernel,iterations = 1)
+    return seg
+
+def compute_iou(seg, gt):
+    intersection = seg*gt
+    union = seg+gt
+    return (np.count_nonzero(intersection) + 1e-6) / (np.count_nonzero(union) + 1e-6)
+
+def perturb_seg(gt, iou_target=0.6):
+    h, w = gt.shape
+    seg = gt.copy()
+
+    _, seg = cv2.threshold(seg, 127, 255, 0)
+
+    # Rare case
+    if h <= 2 or w <= 2:
+        print('GT too small, returning original')
+        return seg
+
+    # Do a bunch of random operations
+    for _ in range(250):
+        for _ in range(4):
+            lx, ly = np.random.randint(w), np.random.randint(h)
+            lw, lh = np.random.randint(lx+1,w+1), np.random.randint(ly+1,h+1)
+
+            # Randomly set one pixel to 1/0. With the following dilate/erode, we can create holes/external regions
+            if np.random.rand() < 0.25:
+                cx = int((lx + lw) / 2)
+                cy = int((ly + lh) / 2)
+                seg[cy, cx] = np.random.randint(2) * 255
+
+            if np.random.rand() < 0.5:
+                seg[ly:lh, lx:lw] = random_dilate(seg[ly:lh, lx:lw])
+            else:
+                seg[ly:lh, lx:lw] = random_erode(seg[ly:lh, lx:lw])
+
+        if compute_iou(seg, gt) < iou_target:
+            break
+
+    return seg
+
+def modify_boundary(image, regional_sample_rate=0.1, sample_rate=0.1, move_rate=0.0, iou_target = 0.8):
+    # modifies boundary of the given mask.
+    # remove consecutive vertice of the boundary by regional sample rate
+    # ->
+    # remove any vertice by sample rate
+    # ->
+    # move vertice by distance between vertice and center of the mask by move rate. 
+    # input: np array of size [H,W] image
+    # output: same shape as input
+    
+    # get boundaries
+    if int(cv2.__version__[0]) >= 4:
+        contours, _ = cv2.findContours(image, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    else:
+        _, contours, _ = cv2.findContours(image, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+
+    #only modified contours is needed actually. 
+    sampled_contours = []   
+    modified_contours = [] 
+
+    for contour in contours:
+        if contour.shape[0] < 10:
+            continue
+        M = cv2.moments(contour)
+
+        #remove region of contour
+        number_of_vertices = contour.shape[0]
+        number_of_removes = int(number_of_vertices * regional_sample_rate)
+        
+        idx_dist = []
+        for i in range(number_of_vertices-number_of_removes):
+            idx_dist.append([i, np.sum((contour[i] - contour[i+number_of_removes])**2)])
+            
+        idx_dist = sorted(idx_dist, key=lambda x:x[1])
+        
+        remove_start = random.choice(idx_dist[:math.ceil(0.1*len(idx_dist))])[0]
+        
+       #remove_start = random.randrange(0, number_of_vertices-number_of_removes, 1)
+        new_contour = np.concatenate([contour[:remove_start], contour[remove_start+number_of_removes:]], axis=0)
+        contour = new_contour
+        
+
+        #sample contours
+        number_of_vertices = contour.shape[0]
+        indices = random.sample(range(number_of_vertices), int(number_of_vertices * sample_rate))
+        indices.sort()
+        sampled_contour = contour[indices]
+        sampled_contours.append(sampled_contour)
+
+        modified_contour = np.copy(sampled_contour)
+        if (M['m00'] != 0):
+            center = round(M['m10'] / M['m00']), round(M['m01'] / M['m00'])
+
+            #modify contours
+            for idx, coor in enumerate(modified_contour):
+
+                change = np.random.normal(0,move_rate) # 0.1 means change position of vertex to 10 percent farther from center
+                x,y = coor[0]
+                new_x = x + (x-center[0]) * change
+                new_y = y + (y-center[1]) * change
+
+                modified_contour[idx] = [new_x,new_y]
+        modified_contours.append(modified_contour)
+        
+    #draw boundary
+    gt = np.copy(image)
+    image = np.zeros((image.shape[0], image.shape[1], 3))
+
+    modified_contours = [cont for cont in modified_contours if len(cont) > 0]
+    if len(modified_contours) == 0:
+        image = gt.copy()
+    else:
+        image = cv2.drawContours(image, modified_contours, -1, (255, 0, 0), -1)
+
+    if len(image.shape) == 3:
+        image = image[:, :, 0]
+    image = perturb_seg(image, iou_target)
+
+    image = image / 255
+    image = (image >= 0.5).astype(np.uint8)
+    
+    return image
+

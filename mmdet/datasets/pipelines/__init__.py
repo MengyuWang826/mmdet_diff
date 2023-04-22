@@ -8,7 +8,8 @@ from .formatting import (Collect, DefaultFormatBundle, ImageToTensor,
 from .instaboost import InstaBoost
 from .loading import (FilterAnnotations, LoadAnnotations, LoadImageFromFile,
                       LoadImageFromWebcam, LoadMultiChannelImageFromFiles,
-                      LoadPanopticAnnotations, LoadProposals, LoadCoarseMasks)
+                      LoadPanopticAnnotations, LoadProposals, LoadCoarseMasks,
+                      LoadPatchData, LoadCoarseMasksNew)
 from .test_time_aug import MultiScaleFlipAug
 from .transforms import (Albu, CopyPaste, CutOut, Expand, MinIoURandomCrop,
                          MixUp, Mosaic, Normalize, Pad, PhotoMetricDistortion,
@@ -28,4 +29,5 @@ __all__ = [
     'EqualizeTransform', 'BrightnessTransform', 'ContrastTransform',
     'Translate', 'RandomShift', 'Mosaic', 'MixUp', 'RandomAffine',
     'YOLOXHSVRandomAug', 'CopyPaste', 'LoadCoarseMasks', 'MatchGTandDT',
+    'LoadPatchData', 'LoadCoarseMasksNew'
 ]

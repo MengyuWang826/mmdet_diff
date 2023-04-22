@@ -48,6 +48,7 @@ from .diffusion_refine import DiffusionRefine
 from .binary_diffusion import BinaryDiffusionRefine
 from .refinementor import Refinementor
 from .sam_refinementor import SamRefinementor
+from .diff_refinementor import DiffRefinementor
 
 __all__ = [
     'ATSS', 'BaseDetector', 'SingleStageDetector', 'TwoStageDetector', 'RPN',

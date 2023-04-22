@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-from .base import BaseDetector
-from ..builder import DETECTORS, build_backbone, build_head, build_loss
+from .base_refinementor import BaseRefinementor
+from ..builder import DETECTORS, build_head, build_loss
 import numpy as np
 
 from PIL import Image
@@ -36,28 +36,25 @@ def mask2bboxcenter(input_masks, device, scale_factor=4):
     return bboxes
 
 @DETECTORS.register_module()
-class SamRefinementor(BaseDetector):
+class DiffRefinementor(BaseRefinementor):
     def __init__(self,
-                 image_encoder,
-                 prompt_encoder,
-                 mask_decoder,
+                 task,
+                 denoise_model,
                  diffusion_cfg,
                  train_cfg,
                  test_cfg,
-                 mask_loss=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=5.0),
-                 iou_loss=dict(type='MSELoss', loss_weight=1.0),
+                 loss_mask=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
+                 loss_texture=dict(type='TextureL1Loss'),
                  num_classes=77,
                  init_cfg=None):
-        super(SamRefinementor, self).__init__(init_cfg=init_cfg)
+        super(DiffRefinementor, self).__init__(task=task, init_cfg=init_cfg)
 
-        self.image_encoder = build_backbone(image_encoder)
-        self.prompt_encoder = build_backbone(prompt_encoder)
-        self.mask_decoder =  build_head(mask_decoder)
+        self.denoise_model = build_head(denoise_model)
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
         self._diffusion_init(diffusion_cfg)
-        self.mask_loss = build_loss(mask_loss)
-        self.iou_loss = build_loss(iou_loss)
+        self.loss_mask = build_loss(loss_mask)
+        self.loss_texture = build_loss(loss_texture)
         self.num_classes = num_classes
     
     def _diffusion_init(self, diffusion_cfg):
@@ -73,93 +70,58 @@ class SamRefinementor(BaseDetector):
         self.num_timesteps = self.betas_cumprod.shape[0]
     
     def forward_train(self,
-                      img,
                       img_metas,
-                      gt_masks,
-                      coarse_masks):
-        current_device = img.device
-        img_embddings = self.extract_feat(img)
-        areas, x_start, x_last, img_ids = self._get_refine_input(gt_masks, coarse_masks, current_device)
-        img_feats = torch.zeros((areas.shape[0], img_embddings.shape[1], img_embddings.shape[2], img_embddings.shape[3]), device=current_device)
-        for i in range(img_embddings.shape[0]):
-            idx = img_ids == i
-            img_feats[idx] = img_embddings[i]
-        del img_embddings
-        t = uniform_sampler(self.num_timesteps, x_start.shape[0], x_start.device)
-        x_t = self.q_sample(x_start, x_last, t, areas, current_device)
-
-        # mask_save(x_start, x_last, x_t)
-
-        bboxes = mask2bboxcenter(x_t, current_device)
-        sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(bboxes, x_t, t)
-        low_res_masks, iou_predictions = self.mask_decoder(
-            img_feats,
-            self.prompt_encoder.get_dense_pe(),
-            sparse_embeddings,
-            dense_embeddings,
-            time_embeddings)
+                      object_img,
+                      object_gt_masks,
+                      object_coarse_masks,
+                      patch_img,
+                      patch_gt_masks,
+                      patch_coarse_masks):
+        current_device = object_img.device
+        img = torch.cat((object_img, patch_img), dim=0)
+        x_start = torch.cat((self._bitmapmasks_to_tensor(object_gt_masks, current_device),
+                             self._bitmapmasks_to_tensor(patch_gt_masks, current_device)), dim=0)
+        x_last = torch.cat((self._bitmapmasks_to_tensor(object_coarse_masks, current_device),
+                            self._bitmapmasks_to_tensor(patch_coarse_masks, current_device)), dim=0)
+        t = uniform_sampler(self.num_timesteps, img.shape[0], current_device)
+        x_t = self.q_sample(x_start, x_last, t, current_device)
+        # train_save(img, x_start, x_last, x_t, img_metas, t)
+        z_t = torch.cat((img, x_t), dim=1)
+        pred_logits = self.denoise_model(z_t, t)
+        iou_pred = self.cal_iou(x_start, pred_logits)
         losses = dict()
-        mask_targets = x_start.unsqueeze(1)
-        iou_targets = self.cal_iou(mask_targets, low_res_masks)
-        losses['loss_mask'] = self.mask_loss(low_res_masks, mask_targets)
-        losses['loss_iou'] = self.iou_loss(iou_predictions, iou_targets)
-        losses['iou'] = iou_targets.mean()
+        losses['loss_mask'] = self.loss_mask(pred_logits, x_start)
+        losses['loss_texture'] = self.loss_texture(pred_logits, x_start, t)
+        losses['iou'] = iou_pred.mean()
         return losses
     
-    def q_sample(self, x_start, x_last, t, areas, current_device):
+    def _bitmapmasks_to_tensor(self, bitmapmasks, current_device):
+        tensor_masks = []
+        for bitmapmask in bitmapmasks:
+            tensor_masks.append(bitmapmask.masks)
+        tensor_masks = np.stack(tensor_masks)
+        tensor_masks = torch.tensor(tensor_masks, device=current_device, dtype=torch.float32)
+        return tensor_masks
+    
+    def q_sample(self, x_start, x_last, t, current_device):
         q_ori_probs = torch.tensor(self.betas_cumprod, device=current_device)
         q_ori_probs = q_ori_probs[t]
-        q_ori_probs = q_ori_probs.reshape(-1, 1, 1)
+        q_ori_probs = q_ori_probs.reshape(-1, 1, 1, 1)
         sample_noise = torch.rand(size=x_start.shape, device=current_device)
         transition_map = (sample_noise < q_ori_probs).float()
-        new_x_start = []
-        for x, area in zip(x_start, areas):
-            new_x_start.append(generate_block_target(x, area))
-        new_x_start = torch.stack(new_x_start, dim=0)
-        sample = transition_map * new_x_start + (1 - transition_map) * x_last
+        sample = transition_map * x_start + (1 - transition_map) * x_last
         # quad_mask_save(x_start, x_last, new_x_start, sample)
-        return sample.unsqueeze(1)
+        return sample
     
     @torch.no_grad()
     def cal_iou(self, target, mask, eps=1e-3):
-        target = target >= 0.5
-        mask = mask >= 0
+        target = target.clone().detach() >= 0.5
+        mask = mask.clone().detach() >= 0
         si = (target & mask).sum(-1).sum(-1)
         su = (target | mask).sum(-1).sum(-1)
         return (si / su + eps)
 
-    def extract_feat(self, img):
-        """Directly extract features from the backbone and neck."""
-        x = self.image_encoder(img)
-        return x
-    
-    def _get_refine_input(self, gt_masks, coarse_masks, current_device):
-        areas, x_start, x_last, img_ids = [], [], [], []
-        img_id = 0
-        for img_gt_masks, img_coarse_masks in zip(gt_masks, coarse_masks):
-            assert len(img_gt_masks) == len(img_coarse_masks)
-            num_ins = len(img_gt_masks)
-            if num_ins > 0:
-                areas.append(img_gt_masks.areas)
-                x_start.append(torch.tensor(img_gt_masks.masks, device=current_device))
-                x_last.append(torch.tensor(img_coarse_masks.masks, device=current_device))
-                img_ids.append(torch.tensor([img_id]*num_ins, device=current_device))
-                img_id += 1
-        areas = np.concatenate(areas, axis=0)
-        x_start = torch.cat(x_start, dim=0)
-        x_last = torch.cat(x_last, dim=0)
-        img_ids = torch.cat(img_ids, dim=0)
-        batch_size = len(x_last)
-        # print(batch_size)
-        if batch_size > 64:
-            chosen_idx = np.random.choice(batch_size, size=32, replace=False)
-            areas = areas[chosen_idx]
-            x_start = x_start[chosen_idx]
-            x_last = x_last[chosen_idx]
-            img_ids = img_ids[chosen_idx]
-        return areas, x_start, x_last, img_ids
-
-    def simple_test(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
+    def simple_test_instance(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
         """Test without augmentation."""
         if len(coarse_masks[0]) == 0:
             bbox_results = [np.zeros([0, 4]) for _ in range(self.num_classes)]
@@ -239,9 +201,6 @@ class SamRefinementor(BaseDetector):
             return x_prev, cur_fine_probs
         else:
             return low_res_masks.sigmoid(), iou_predictions
-
-    def aug_test(self, imgs, img_metas, rescale=False):
-        raise NotImplementedError
     
     def _format_bboxes_results(self,bboxes, labels):
         '''
@@ -265,6 +224,14 @@ class SamRefinementor(BaseDetector):
         for i in range(len(masks)):
             cls_masks[labels[i]].append(masks[i])
         return cls_masks
+
+    def aug_test(self, imgs, img_metas, rescale=False):
+        raise NotImplementedError
+    
+    def extract_feat(self, img):
+        """Directly extract features from the backbone and neck."""
+        raise NotImplementedError
+
 
 @torch.no_grad()
 def generate_block_target(mask, area):
@@ -338,21 +305,29 @@ def multi_mask_save(coarse, refine):
         Image.fromarray(out).save(f'results/{idx}.png')
         idx += 1
 
-def quad_mask_save(gt, coarse, new_gt, q_sample):
-    gt = gt.cpu().numpy().astype(np.uint8)
-    gt = gt * 255
-    coarse = coarse.cpu().numpy().astype(np.uint8)
-    coarse = coarse * 255
-    new_gt = new_gt.cpu().numpy().astype(np.uint8)
-    new_gt = new_gt * 255
-    q_sample = q_sample.cpu().numpy().astype(np.uint8)
-    q_sample = q_sample * 255
+def train_save(img, x_start, x_last, x_t, img_metas, t):
+    x_start = torch.cat([x_start]*3, dim=1)
+    x_last = torch.cat([x_last]*3, dim=1)
+    x_t = torch.cat([x_t]*3, dim=1)
+    img = img.cpu().numpy()
+    img = img.transpose((0, 2, 3, 1))
+    img_mean = img_metas[0]['img_norm_cfg']['mean'].reshape(1, 1, 1, 3)
+    img_std = img_metas[0]['img_norm_cfg']['std'].reshape(1, 1, 1, 3)
+    img = img * img_std + img_mean
+    img = img.astype(np.uint8)
+    x_start = x_start.cpu().numpy().transpose((0, 2, 3, 1)).astype(np.uint8)
+    x_start = x_start * 255
+    x_last = x_last.cpu().numpy().transpose((0, 2, 3, 1)).astype(np.uint8)
+    x_last = x_last * 255
+    x_t = x_t.cpu().numpy().transpose((0, 2, 3, 1)).astype(np.uint8)
+    x_t = x_t * 255
     idx = 0
-    for gt_mask, coarse_mask, nre_gt_mask, q in zip(gt, coarse, new_gt, q_sample):
-        out1 = np.concatenate((gt_mask, coarse_mask), axis=0)
-        out2 = np.concatenate((nre_gt_mask, q), axis=0)
+    for img, gt_mask, coarse_mask, q in zip(img, x_start, x_last, x_t):
+        out1 = np.concatenate((img, gt_mask), axis=0)
+        out2 = np.concatenate((coarse_mask, q), axis=0)
         out = np.concatenate((out1, out2), axis=1)
-        Image.fromarray(out).save(f'results/{idx}.png')
+        ct = t[idx].item()
+        Image.fromarray(out).save(f'results/{idx}_train.png')
         idx += 1
 
 def refine_save(coarse, refine):

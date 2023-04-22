@@ -1,7 +1,7 @@
 import json
 import pycocotools.mask as maskUtils
 
-coarse_dts = json.load(open('data/refine_annotations/maskrcnn_val.json'))
+coarse_dts = json.load(open('data/lvis_annotations/maskrcnn_lvis_val_cocofied.json'))
 refine_dts = json.load(open('results.segm.json'))
 
 for idx, coarse_dt in enumerate(coarse_dts):

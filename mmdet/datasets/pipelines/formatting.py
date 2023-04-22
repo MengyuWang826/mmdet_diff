@@ -214,8 +214,8 @@ class DefaultFormatBundle:
                 default bundle.
         """
 
-        if 'img' in results:
-            img = results['img']
+        for key in results.get('img_fields', ['img']):
+            img = results[key]
             if self.img_to_float is True and img.dtype == np.uint8:
                 # Normally, image is of uint8 type without normalization.
                 # At this time, it needs to be forced to be converted to
@@ -223,7 +223,8 @@ class DefaultFormatBundle:
                 # will be wrong. Only used for YOLOX currently .
                 img = img.astype(np.float32)
             # add default meta keys
-            results = self._add_default_meta_keys(results)
+            if key == 'object_data':
+                results = self._add_default_meta_keys(results)
             if len(img.shape) < 3:
                 img = np.expand_dims(img, -1)
             # To improve the computational speed by by 3-5 times, apply:
@@ -238,27 +239,14 @@ class DefaultFormatBundle:
                 img = to_tensor(img)
             else:
                 img = to_tensor(img).permute(2, 0, 1).contiguous()
-            results['img'] = DC(
+            results[key] = DC(
                 img, padding_value=self.pad_val['img'], stack=True)
-        for key in ['proposals', 'gt_bboxes', 'gt_bboxes_ignore', 'gt_labels', 'dt_labels']:
-            if key not in results:
-                continue
-            results[key] = DC(to_tensor(results[key]))
-        if 'gt_masks' in results:
-            results['gt_masks'] = DC(
-                results['gt_masks'],
+        
+        for key in results.get('mask_fields', []):
+            results[key] = DC(
+                results[key],
                 padding_value=self.pad_val['masks'],
                 cpu_only=True)
-        if 'coarse_masks' in results:
-            results['coarse_masks'] = DC(
-                results['coarse_masks'],
-                padding_value=self.pad_val['masks'],
-                cpu_only=True)
-        if 'gt_semantic_seg' in results:
-            results['gt_semantic_seg'] = DC(
-                to_tensor(results['gt_semantic_seg'][None, ...]),
-                padding_value=self.pad_val['seg'],
-                stack=True)
         return results
 
     def _add_default_meta_keys(self, results):
@@ -274,7 +262,7 @@ class DefaultFormatBundle:
         Returns:
             results (dict): Updated result dict contains the data to convert.
         """
-        img = results['img']
+        img = results['object_img']
         results.setdefault('pad_shape', img.shape)
         results.setdefault('scale_factor', 1.0)
         num_channels = 1 if len(img.shape) < 3 else img.shape[2]

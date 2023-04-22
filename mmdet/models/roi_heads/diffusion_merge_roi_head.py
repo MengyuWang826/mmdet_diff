@@ -209,8 +209,8 @@ class DiffusionMergeRoIHead(StandardRoIHead):
         fine_map = (sample_noise < cur_fine_probs).float()
         x_prev = pred_x_start * fine_map + x * (1 - fine_map)
 
-        # dim_4_cuda_mask_save(pred_x_start, f'results/x_start_{t}')
-        # dim_4_cuda_mask_save(fine_map, f'results/fine_map{t}')
+        dim_4_cuda_mask_save(pred_x_start, f'results/x_start_{t}')
+        dim_4_cuda_mask_save(fine_map, f'results/fine_map{t}')
         # dim_4_cuda_mask_save(x_prev, f'results/x_prev{t}')
         return x_prev, cur_fine_probs
 
