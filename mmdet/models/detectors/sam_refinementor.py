@@ -70,7 +70,7 @@ class SamRefinementor(BaseDetector):
         betas_cumprod_prev = self.betas_cumprod[:-1]
         self.betas_cumprod_prev = np.insert(betas_cumprod_prev, 0, 1)
         self.betas = self.betas_cumprod / self.betas_cumprod_prev
-        self.num_timesteps = self.betas_cumprod.shape[0]    
+        self.num_timesteps = self.betas_cumprod.shape[0]
     
     def forward_train(self,
                       img,

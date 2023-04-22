@@ -4,6 +4,7 @@ _base_ = [
 
 model = dict(
     type='DiffRefinementor',
+    task='instance',
     denoise_model=dict(
         type='DenoiseUNet',
         in_channels=4,
@@ -39,7 +40,7 @@ train_pipeline = [
     dict(type='LoadAnnotations', with_bbox=False, with_label=False, with_mask=True),
     dict(type='LoadCoarseMasksNew'),
     dict(type='LoadPatchData', object_size=object_size, patch_size=patch_size),
-    dict(type='Resize', img_scale=(object_size, object_size), keep_ratio=True),
+    dict(type='Resize', img_scale=(object_size, object_size), keep_ratio=False),
     dict(type='RandomFlip', flip_ratio=0.5),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='DefaultFormatBundle'),
@@ -61,8 +62,8 @@ dataset_type = 'CollectionRefine'
 img_root = 'data/'
 ann_root = 'data/lvis_annotations/'
 train_dataloader=dict(
-    samples_per_gpu=1,
-    workers_per_gpu=1)
+    samples_per_gpu=2,
+    workers_per_gpu=2)
 test_dataloader=dict(
     samples_per_gpu=1,
     workers_per_gpu=1)

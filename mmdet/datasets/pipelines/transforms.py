@@ -280,7 +280,7 @@ class Resize:
                 if self.keep_ratio:
                     results[key] = results[key].rescale(results['scale'])
                 else:
-                    results[key] = results[key].resize(results['img_shape'][:2])
+                    results[key] = results[key].resize(results['scale'])
         else:
             for key in results.get('mask_fields', []):
                 if results[key] is None:

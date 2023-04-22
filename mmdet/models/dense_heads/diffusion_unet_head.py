@@ -30,8 +30,8 @@ def zero_module(module):
     """
     Zero out the parameters of a module and return it.
     """
-    for p in module.parameters():
-        p.detach().zero_()
+    # for p in module.parameters():
+    #     p.detach().zero_()
     return module
 
 def conv_nd(dims, *args, **kwargs):
@@ -317,7 +317,7 @@ class QKVAttention(nn.Module):
 
 
 @HEADS.register_module()
-class DenoiseUNet(nn.Module):
+class DenoiseUNet(BaseModule):
     """
     The full UNet model with attention and timestep embedding.
     :param in_channels: channels in the input Tensor.
@@ -467,10 +467,7 @@ class DenoiseUNet(nn.Module):
             self.out = nn.Sequential(
                 normalization(ch),
                 nn.SiLU(),
-                zero_module(conv_nd(dims, model_channels, model_channels//2, 3, padding=1)),
-                normalization(model_channels//2),
-                nn.SiLU(),
-                zero_module(conv_nd(dims, model_channels//2, out_channels, 3, padding=1)))
+                zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)))
 
     def forward(self, x, timesteps):
         """
@@ -482,6 +479,7 @@ class DenoiseUNet(nn.Module):
         """
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        h = x
         for module in self.input_blocks:
             h = module(h, emb)
             hs.append(h)

@@ -132,15 +132,6 @@ class CollectionRefine(LVISV1Dataset):
         collect = json.load(open(collection_json))
         for dataset_name in collection_datasets:
             self.data_infos.extend(collect[dataset_name])
-        
-        # H, W = 1000, 1000
-        # for img_info in self.data_infos:
-        #     h, w = img_info['height'], img_info['width']
-        #     if h < H:
-        #         H = h
-        #     if w < W:
-        #         W = w
-        # a = 1
 
     def load_coarse(self, coarse_file):
         coarse_dts = json.load(open(coarse_file))
@@ -247,7 +238,7 @@ class CollectionRefine(LVISV1Dataset):
                     dt = self.coarse_infos[ann_id]
                     chosen_idx = np.random.choice(len(dt), size=1).item()
                     coarse_masks = dt[chosen_idx]['segmentation']
-        return dict(masks=coarse_masks)
+        return dict(masks=None)
     
     def get_coarse_info_test(self, img_info):
         img_id = img_info['id']

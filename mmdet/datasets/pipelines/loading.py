@@ -776,7 +776,7 @@ class LoadCoarseMasksNew:
             rle = mask_ann
         mask = maskUtils.decode(rle)
         return mask
-            
+
     def __call__(self, results):
         h, w = results['img_info']['height'], results['img_info']['width']
         coarse_masks = results['coarse_info']['masks']
@@ -786,7 +786,6 @@ class LoadCoarseMasksNew:
             else:
                 gt_mask = (results['gt_masks'].masks[0] * 255).astype(np.uint8)
                 coarse_masks = modify_boundary(gt_mask)
-                coarse_masks = coarse_masks.astype(np.uint8)
                 # Image.fromarray(gt_mask).save(f'results/gt.png')
                 # Image.fromarray(coarse_masks).save(f'results/modify.png')
             results['coarse_masks'] = BitmapMasks([coarse_masks], h, w)
@@ -854,7 +853,7 @@ class LoadPatchData:
             results['object_coarse_masks'] = BitmapMasks(object_coarse_mask, object_coarse_mask.shape[-2], object_coarse_mask.shape[-1])
         return results
     
-    def ramdom_crop_patch(self, results):
+    def _get_patch_crop_coor(self, results):
         h, w = results['object_gt_masks'].height, results['object_gt_masks'].width
         if h < self.patch_size or w < self.patch_size:
             patch_size = int(min(h, w) / 2)
@@ -866,12 +865,18 @@ class LoadPatchData:
         offset_w = np.random.randint(0, margin_w + 1)
         x_1_pt, x_2_pt = offset_w, offset_w + patch_size
         y_1_pt, y_2_pt = offset_h, offset_h + patch_size
-        results['patch_img'] = results['object_img'][y_1_pt: y_2_pt, x_1_pt: x_2_pt, :]
-        patch_gt_mask = results['object_gt_masks'].masks[:, y_1_pt: y_2_pt, x_1_pt: x_2_pt]
-        results['patch_gt_masks'] = BitmapMasks(patch_gt_mask, patch_gt_mask.shape[-2], patch_gt_mask.shape[-1])
-        patch_coarse_mask = results['object_coarse_masks'].masks[:, y_1_pt: y_2_pt, x_1_pt: x_2_pt]
-        results['patch_coarse_masks'] = BitmapMasks(patch_coarse_mask, patch_coarse_mask.shape[-2], patch_coarse_mask.shape[-1])
-        return results
+        return x_1_pt, y_1_pt, x_2_pt, y_2_pt
+    
+    def ramdom_crop_patch(self, results):
+        while True:
+            x_1_pt, y_1_pt, x_2_pt, y_2_pt = self._get_patch_crop_coor(results)
+            patch_gt_mask = results['object_gt_masks'].masks[:, y_1_pt: y_2_pt, x_1_pt: x_2_pt]
+            if patch_gt_mask.sum() != 0:
+                results['patch_gt_masks'] = BitmapMasks(patch_gt_mask, patch_gt_mask.shape[-2], patch_gt_mask.shape[-1])
+                results['patch_img'] = results['object_img'][y_1_pt: y_2_pt, x_1_pt: x_2_pt, :]
+                patch_coarse_mask = modify_boundary(patch_gt_mask[0] * 255)
+                results['patch_coarse_masks'] = BitmapMasks([patch_coarse_mask], patch_coarse_mask.shape[-2], patch_coarse_mask.shape[-1])
+                return results
 
     def __call__(self, results):
         results = self.ramdom_crop_object(results)
@@ -1063,8 +1068,12 @@ def modify_boundary(image, regional_sample_rate=0.1, sample_rate=0.1, move_rate=
     else:
         image = cv2.drawContours(image, modified_contours, -1, (255, 0, 0), -1)
 
-    image = image[:, :, 0]
+    if len(image.shape) == 3:
+        image = image[:, :, 0]
     image = perturb_seg(image, iou_target)
+
+    image = image / 255
+    image = (image >= 0.5).astype(np.uint8)
     
     return image
 
