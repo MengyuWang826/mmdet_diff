@@ -33,6 +33,7 @@ model = dict(
 
 object_size = 256
 patch_size = 128
+test_scale=(1024, 1024)
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
@@ -49,12 +50,12 @@ train_pipeline = [
 
 test_pipeline = [
     dict(type='LoadImageFromFile'),
-    dict(type='LoadCoarseMasks', with_bbox=True, test_mode=True),
-    dict(type='Resize', img_scale=object_size, keep_ratio=True),
+    dict(type='LoadCoarseMasksNew', test_mode=True),
+    dict(type='Resize', img_scale=test_scale, keep_ratio=True),
     dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size=object_size),
+    dict(type='Pad', size=test_scale, img_only=True),
     dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
+    dict(type='Collect', keys=['img', 'coarse_masks'])
 ]
 
 
@@ -62,8 +63,8 @@ dataset_type = 'CollectionRefine'
 img_root = 'data/'
 ann_root = 'data/lvis_annotations/'
 train_dataloader=dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2)
+    samples_per_gpu=4,
+    workers_per_gpu=4)
 test_dataloader=dict(
     samples_per_gpu=1,
     workers_per_gpu=1)
@@ -112,13 +113,13 @@ lr_config = dict(
     policy='step',
     gamma=0.1,
     by_epoch=False,
-    step=[327778, 355092],
+    step=[8000, 9000],
     warmup='linear',
     warmup_by_epoch=False,
     warmup_ratio=1.0,  # no warmup
     warmup_iters=10)
 
-max_iters = 400000
+max_iters = 10000
 runner = dict(type='IterBasedRunner', max_iters=max_iters)
 
 log_config = dict(
@@ -127,7 +128,7 @@ log_config = dict(
         dict(type='TextLoggerHook', by_epoch=False),
         # dict(type='TensorboardLoggerHook', by_epoch=False)
     ])
-interval = 5000
+interval = 1000
 workflow = [('train', interval)]
 checkpoint_config = dict(
     by_epoch=False, interval=interval, save_last=True, max_keep_ckpts=40)
@@ -136,4 +137,3 @@ evaluation = dict(
     interval=interval,
     metric=['bbox', 'segm'])
 
-# load_from = 'pretrain/pretrained_backone_and_neck.pth'

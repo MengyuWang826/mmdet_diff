@@ -223,8 +223,7 @@ class DefaultFormatBundle:
                 # will be wrong. Only used for YOLOX currently .
                 img = img.astype(np.float32)
             # add default meta keys
-            if key == 'object_data':
-                results = self._add_default_meta_keys(results)
+            # results = self._add_default_meta_keys(results)
             if len(img.shape) < 3:
                 img = np.expand_dims(img, -1)
             # To improve the computational speed by by 3-5 times, apply:

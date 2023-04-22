@@ -355,7 +355,7 @@ class LoadAnnotations:
             assert mask is not None
             mask = mask.astype(np.float32) / 255
             mask = (mask >= 0.5).astype(np.uint8)
-            gt_masks = BitmapMasks([mask], h, w)
+            gt_masks = BitmapMasks([mask], mask.shape[-2], mask.shape[-1])
         else:
             gt_masks = results['ann_info']['masks']
             gt_masks = BitmapMasks([self._poly2mask(gt_masks, h, w)], h, w)
@@ -745,9 +745,9 @@ class LoadCoarseMasksNew:
     def __init__(self,
                  with_bbox=False,
                  test_mode=False,
-                 area_thr=0):
+                 area_thr=1024):
         self.test_mode = test_mode
-        self.area_thr = area_thr
+        self.area_thr = area_thr 
         self.with_bbox = with_bbox
     
     def _poly2mask(self, mask_ann, img_h, img_w):
@@ -798,7 +798,7 @@ class LoadCoarseMasksNew:
                 areas = new_coarse_masks.areas
                 valid_idx = areas >= self.area_thr
                 new_coarse_masks = new_coarse_masks.masks[valid_idx]
-
+        results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
         results['mask_fields'].append('coarse_masks')
         if self.with_bbox:
             results['dt_bboxes'] = results['coarse_info']['bboxes'][valid_idx]
@@ -894,6 +894,7 @@ class LoadPatchData:
         del results['gt_masks']
         del results['coarse_masks']
         return results
+
 
 def generate_block_target(mask, area):
     boundary_width = max((int(np.sqrt(area) / 10), 2))
