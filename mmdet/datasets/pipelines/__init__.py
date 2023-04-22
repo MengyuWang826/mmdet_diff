@@ -15,7 +15,7 @@ from .transforms import (Albu, CopyPaste, CutOut, Expand, MinIoURandomCrop,
                          MixUp, Mosaic, Normalize, Pad, PhotoMetricDistortion,
                          RandomAffine, RandomCenterCropPad, RandomCrop,
                          RandomFlip, RandomShift, Resize, SegRescale,
-                         YOLOXHSVRandomAug, MatchGTandDT)
+                         YOLOXHSVRandomAug, MatchGTandDT, DoubleResize)
 
 __all__ = [
     'Compose', 'to_tensor', 'ToTensor', 'ImageToTensor', 'ToDataContainer',
@@ -29,5 +29,5 @@ __all__ = [
     'EqualizeTransform', 'BrightnessTransform', 'ContrastTransform',
     'Translate', 'RandomShift', 'Mosaic', 'MixUp', 'RandomAffine',
     'YOLOXHSVRandomAug', 'CopyPaste', 'LoadCoarseMasks', 'MatchGTandDT',
-    'LoadPatchData', 'LoadCoarseMasksNew'
+    'LoadPatchData', 'LoadCoarseMasksNew', 'DoubleResize'
 ]

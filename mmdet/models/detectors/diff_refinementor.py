@@ -44,7 +44,7 @@ class DiffRefinementor(BaseRefinementor):
                  train_cfg,
                  test_cfg,
                  loss_mask=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
-                 loss_texture=dict(type='TextureL1Loss'),
+                 loss_texture=dict(type='TextureL1Loss', loss_weight=5.0),
                  num_classes=77,
                  init_cfg=None):
         super(DiffRefinementor, self).__init__(task=task, init_cfg=init_cfg)
@@ -85,7 +85,7 @@ class DiffRefinementor(BaseRefinementor):
                             self._bitmapmasks_to_tensor(patch_coarse_masks, current_device)), dim=0)
         t = uniform_sampler(self.num_timesteps, img.shape[0], current_device)
         x_t = self.q_sample(x_start, x_last, t, current_device)
-        # train_save(img, x_start, x_last, x_t, img_metas, t)
+        train_save(img, x_start, x_last, x_t, img_metas, t)
         z_t = torch.cat((img, x_t), dim=1)
         pred_logits = self.denoise_model(z_t, t)
         iou_pred = self.cal_iou(x_start, pred_logits)
@@ -119,38 +119,41 @@ class DiffRefinementor(BaseRefinementor):
         mask = mask.clone().detach() >= 0
         si = (target & mask).sum(-1).sum(-1)
         su = (target | mask).sum(-1).sum(-1)
-        return (si / su + eps)
+        return (si / (su + eps))
 
-    def simple_test_instance(self, img, img_metas, coarse_masks, dt_bboxes, rescale=False):
+    def simple_test_instance(self, 
+                             img_metas, 
+                             img, 
+                             coarse_masks,
+                             **kwargs):
         """Test without augmentation."""
         if len(coarse_masks[0]) == 0:
             bbox_results = [np.zeros([0, 4]) for _ in range(self.num_classes)]
             mask_results = [[] for _ in range(self.num_classes)]
             return [(bbox_results, mask_results)]
+        
         current_device = img.device
-        img_embddings = self.extract_feat(img)
+        img, x_last = self._get_pan_input(img, coarse_masks, img_metas, current_device)
+        x_last = x_last.unsqueeze(1).float()
 
-        H, W = coarse_masks[0].height, coarse_masks[0].width
-        x_last = torch.tensor(coarse_masks[0].masks, device=current_device)
-        x = x_last.unsqueeze(1).float()
-        if self.diff_iter:
-            cur_fine_probs = torch.zeros_like(x)
-            indices = list(range(self.num_timesteps))[::-1]
-            for i in indices:
-                bboxes = mask2bboxcenter(x, current_device)
-                t = torch.tensor([i] * x.shape[0], device=current_device)
-                x, cur_fine_probs = self.p_sample(x, cur_fine_probs, t, bboxes, img_embddings)
+        num_ins = len(x_last)
+        if num_ins <= 8:
+            xs = [x_last]
         else:
-            bboxes = mask2bboxcenter(x, current_device)
-            t = torch.tensor([0] * x.shape[0], device=current_device)
-            img_feats = torch.repeat_interleave(img_embddings, bboxes.shape[0], dim=0)
-            sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(bboxes, None, t)
-            x, iou_predictions = self.mask_decoder(
-                img_feats,
-                self.prompt_encoder.get_dense_pe(),
-                sparse_embeddings,
-                dense_embeddings,
-                time_embeddings)
+            xs = []
+            for idx in range(0, num_ins, 8):
+                end = min(num_ins, idx+8)
+                xs.append(x_last[idx: end])
+
+        indices = list(range(self.num_timesteps))[::-1]
+        for x in xs:
+            cur_img = torch.repeat_interleave(img, len(x), dim=0)
+            cur_fine_probs = torch.zeros_like(x)
+            for i in indices:
+                t = torch.tensor([i] * x.shape[0], device=current_device)
+                x, cur_fine_probs = self.p_sample(cur_img, x, cur_fine_probs, t)
+            refine_save(xs[0], x)
+    
         ori_shape = img_metas[0]['ori_shape'][:2]
         img_shape = img_metas[0]['img_shape'][:2]
         pad_shape = img_metas[0]['pad_shape'][:2]
@@ -174,19 +177,20 @@ class DiffRefinementor(BaseRefinementor):
         bbox_results = self._format_bboxes_results(bboxes, labels)
         mask_results = self._format_mask_results(refine_mask, labels)
         return [(bbox_results, mask_results)]
+    
+    def _get_pan_input(self, img, coarse_masks, img_metas, current_device):
+        img_h, img_w = img_metas[0]['img_shape'][:2]
+        coarse_masks = coarse_masks[0].resize((256, 256))
+        img = F.interpolate(img[:, :, :img_h, :img_w], size=(256, 256), mode='bilinear')
+        x_last = torch.tensor(coarse_masks.masks, device=current_device)
+        return img, x_last
 
-    def p_sample(self, x, cur_fine_probs, t, bboxes, img_embddings):
-        img_feats = torch.repeat_interleave(img_embddings, bboxes.shape[0], dim=0)
-        sparse_embeddings, dense_embeddings, time_embeddings = self.prompt_encoder(bboxes, x, t)
-        low_res_masks, iou_predictions = self.mask_decoder(
-            img_feats,
-            self.prompt_encoder.get_dense_pe(),
-            sparse_embeddings,
-            dense_embeddings,
-            time_embeddings)
+    def p_sample(self, img, x, cur_fine_probs, t):
+        z = torch.cat((img, x), dim=1)
+        pred_logits = self.denoise_model(z, t)
         t = t[0].item()
-        pred_x_start = (low_res_masks >= 0).float()
-        x_start_fine_probs = 2 * torch.abs(low_res_masks.sigmoid() - 0.5)
+        pred_x_start = (pred_logits >= 0).float()
+        x_start_fine_probs = 2 * torch.abs(pred_logits.sigmoid() - 0.5)
         beta_cumprod = self.betas_cumprod[t]
         beta_cumprod_prev = self.betas_cumprod_prev[t]
         p_c_to_f = x_start_fine_probs * (beta_cumprod_prev - beta_cumprod) / (1 - x_start_fine_probs*beta_cumprod)
@@ -197,10 +201,7 @@ class DiffRefinementor(BaseRefinementor):
 
         # single_mask_save(pred_x_start, t, 'start')
         # single_mask_save(x_prev, t, 'prev')
-        if t > 0:
-            return x_prev, cur_fine_probs
-        else:
-            return low_res_masks.sigmoid(), iou_predictions
+        return x_prev, cur_fine_probs
     
     def _format_bboxes_results(self,bboxes, labels):
         '''
@@ -331,9 +332,9 @@ def train_save(img, x_start, x_last, x_t, img_metas, t):
         idx += 1
 
 def refine_save(coarse, refine):
-    coarse = coarse.cpu().numpy().astype(np.uint8)
+    coarse = coarse.squeeze(1).cpu().numpy().astype(np.uint8)
     coarse = coarse * 255
-    refine = refine.cpu().numpy().astype(np.uint8)
+    refine = refine.squeeze(1).cpu().numpy().astype(np.uint8)
     refine = refine * 255
     idx = 0
     for coarse_mask, refine_mask in zip(coarse, refine):

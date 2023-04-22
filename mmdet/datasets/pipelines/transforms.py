@@ -356,6 +356,135 @@ class Resize:
 
 
 @PIPELINES.register_module()
+class DoubleResize:
+    """Resize images & bbox & mask.
+
+    This transform resizes the input image to some scale. Bboxes and masks are
+    then resized with the same scale factor. If the input dict contains the key
+    "scale", then the scale in the input dict is used, otherwise the specified
+    scale in the init method is used. If the input dict contains the key
+    "scale_factor" (if MultiScaleFlipAug does not give img_scale but
+    scale_factor), the actual scale will be computed by image shape and
+    scale_factor.
+
+    `img_scale` can either be a tuple (single-scale) or a list of tuple
+    (multi-scale). There are 3 multiscale modes:
+
+    - ``ratio_range is not None``: randomly sample a ratio from the ratio \
+      range and multiply it with the image scale.
+    - ``ratio_range is None`` and ``multiscale_mode == "range"``: randomly \
+      sample a scale from the multiscale range.
+    - ``ratio_range is None`` and ``multiscale_mode == "value"``: randomly \
+      sample a scale from multiple scales.
+
+    Args:
+        img_scale (tuple or list[tuple]): Images scales for resizing.
+        multiscale_mode (str): Either "range" or "value".
+        ratio_range (tuple[float]): (min_ratio, max_ratio)
+        keep_ratio (bool): Whether to keep the aspect ratio when resizing the
+            image.
+        bbox_clip_border (bool, optional): Whether to clip the objects outside
+            the border of the image. In some dataset like MOT17, the gt bboxes
+            are allowed to cross the border of images. Therefore, we don't
+            need to clip the gt bboxes in these cases. Defaults to True.
+        backend (str): Image resize backend, choices are 'cv2' and 'pillow'.
+            These two backends generates slightly different results. Defaults
+            to 'cv2'.
+        interpolation (str): Interpolation method, accepted values are
+            "nearest", "bilinear", "bicubic", "area", "lanczos" for 'cv2'
+            backend, "nearest", "bilinear" for 'pillow' backend.
+        override (bool, optional): Whether to override `scale` and
+            `scale_factor` so as to call resize twice. Default False. If True,
+            after the first resizing, the existed `scale` and `scale_factor`
+            will be ignored so the second resizing can be allowed.
+            This option is a work-around for multiple times of resize in DETR.
+            Defaults to False.
+    """
+
+    def __init__(self,
+                 large_scale=None,
+                 small_scale=None,
+                 backend='cv2',
+                 interpolation='bilinear',
+                 override=False):
+        assert large_scale is not None
+        self.large_scale = large_scale
+        assert small_scale is not None
+        self.small_scale = small_scale
+        
+        self.backend = backend
+        # TODO: refactor the override option in Resize
+        self.interpolation = interpolation
+        self.override = override
+    
+    def _resize_img(self, results):
+        """Resize images with ``results['scale']``."""
+        key = 'img'
+        large_img, scale_factor = mmcv.imrescale(
+            results[key],
+            self.large_scale,
+            return_scale=True,
+            interpolation=self.interpolation,
+            backend=self.backend)
+        # the w_scale and h_scale has minor difference
+        # a real fix should be done in the mmcv.imrescale in the future
+        new_h, new_w = large_img.shape[:2]
+        h, w = results[key].shape[:2]
+        w_scale = new_w / w
+        h_scale = new_h / h
+
+        small_img, _, _ = mmcv.imresize(
+            results[key],
+            self.small_scale,
+            return_scale=True,
+            interpolation=self.interpolation,
+            backend=self.backend)
+        
+        results['img'] = large_img
+        results['small_img'] = small_img
+
+        scale_factor = np.array([w_scale, h_scale, w_scale, h_scale],
+                                dtype=np.float32)
+        results['img_shape'] = large_img.shape
+        # in case that there is no padding
+        results['pad_shape'] = large_img.shape
+        results['scale_factor'] = scale_factor
+        results['keep_ratio'] = True
+        results['img_fields'].append('small_img')
+
+    def _resize_masks(self, results):
+        """Resize masks with ``results['scale']``"""
+        for key in results.get('mask_fields', []):
+            if results[key] is None:
+                continue
+            results[key] = results[key].resize(self.small_scale)
+
+    def __call__(self, results):
+        """Call function to resize images, bounding boxes, masks, semantic
+        segmentation map.
+
+        Args:
+            results (dict): Result dict from loading pipeline.
+
+        Returns:
+            dict: Resized results, 'img_shape', 'pad_shape', 'scale_factor', \
+                'keep_ratio' keys are added into result dict.
+        """
+        self._resize_img(results)
+        self._resize_masks(results)
+        return results
+
+    def __repr__(self):
+        repr_str = self.__class__.__name__
+        repr_str += f'(img_scale={self.img_scale}, '
+        repr_str += f'multiscale_mode={self.multiscale_mode}, '
+        repr_str += f'ratio_range={self.ratio_range}, '
+        repr_str += f'keep_ratio={self.keep_ratio}, '
+        repr_str += f'bbox_clip_border={self.bbox_clip_border})'
+        return repr_str
+
+
+@PIPELINES.register_module()
 class RandomFlip:
     """Flip the image & bbox & mask.
 
@@ -651,6 +780,8 @@ class Pad:
         """Pad images according to ``self.size``."""
         pad_val = self.pad_val.get('img', 0)
         for key in results.get('img_fields', ['img']):
+            if key == 'small_img':
+                continue
             if self.pad_to_square:
                 max_size = max(results[key].shape[:2])
                 self.size = (max_size, max_size)

@@ -10,13 +10,11 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
+            // "args": ["configs/refine/bi_diff_r50_multi_dataset.py",
+            //          "test1/bi_diff_r50_multi_dataset/iter_1000.pth",
+            //          "--eval", "segm"],
             "args": ["configs/refine/bi_diff_r50_multi_dataset.py",
                      "--no-validate"],
-            // "args": ["configs/refine/bi_diff_r50_lvis.py",
-            //          "checkpoints/bi_merge/iter_145000.pth",
-            //          "--eval", "segm"],
-            // // "args": ["configs/refine/bi_sam_diff_lvis.py",
-            //          "--no-validate"],
             "justMyCode": true
         }
     ]

@@ -231,14 +231,14 @@ class CollectionRefine(LVISV1Dataset):
     def get_coarse_info(self, ann_info):
         coarse_masks = None
         if 'ann_id' in ann_info:
-            maskrcnn_flag = np.random.rand() < 1
+            maskrcnn_flag = np.random.rand() < 0.3
             if maskrcnn_flag:
                 ann_id = ann_info['ann_id']
                 if ann_id in self.coarse_infos:
                     dt = self.coarse_infos[ann_id]
                     chosen_idx = np.random.choice(len(dt), size=1).item()
                     coarse_masks = dt[chosen_idx]['segmentation']
-        return dict(masks=None)
+        return dict(masks=coarse_masks)
     
     def get_coarse_info_test(self, img_info):
         img_id = img_info['id']
@@ -269,7 +269,7 @@ class CollectionRefine(LVISV1Dataset):
             dict: Training data and annotation after pipeline with new keys 
                 introduced by pipeline.
         """
-        img_info = self.data_infos[idx]
+        img_info = self.data_infos[-1]
         ann_info = self.get_ann_info(img_info)
         if ann_info is None:
             return None
