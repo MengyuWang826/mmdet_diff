@@ -11,7 +11,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": ["configs/refine/bi_diff_r50_multi_dataset.py",
-                     "diff_refine_collection/bi_diff_r50_multi_dataset/iter_40000.pth",
+                     "checkpoints/latest/iter_40000.pth",
                      "--eval", "segm"],
             // "args": ["configs/refine/bi_diff_r50_multi_dataset.py",
             //          "--no-validate"],

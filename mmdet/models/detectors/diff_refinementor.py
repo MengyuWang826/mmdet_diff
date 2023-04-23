@@ -146,76 +146,33 @@ class DiffRefinementor(BaseRefinementor):
             return [(bbox_results, mask_results)]
         
         current_device = img.device
-<<<<<<< HEAD
-        img, x_last = self._get_pan_input(img, coarse_masks, img_metas, current_device)
-        x_last = x_last.unsqueeze(1).float()
+        object_imgs, object_masks, scale_factors, object_coors = self._get_object_input(img, coarse_masks, img_metas, current_device)
 
-        num_ins = len(x_last)
-        if num_ins <= 2:
-            xs = [x_last]
+        num_ins = len(object_masks)
+        if num_ins <= 16:
+            xs = [(object_masks, object_imgs)]
         else:
             xs = []
-            for idx in range(0, num_ins, 2):
-                end = min(num_ins, idx+2)
-                xs.append(x_last[idx: end])
-=======
-        object_imgs, object_masks, scale_factors, object_coors = self._get_object_input(img, coarse_masks, img_metas, current_device)
->>>>>>> 9eba8ee17abbc62cad837364a8795854859487f2
+            for idx in range(0, num_ins, 16):
+                end = min(num_ins, idx+16)
+                xs.append((object_masks[idx: end], object_imgs[idx:end]))
 
-        # num_ins = len(x_last)
-        # if num_ins <= 8:
-        #     xs = [x_last]
-        # else:
-        #     xs = []
-        #     for idx in range(0, num_ins, 8):
-        #         end = min(num_ins, idx+8)
-        #         xs.append(x_last[idx: end])
-
-        x = object_masks
         indices = list(range(self.num_timesteps))[::-1]
-<<<<<<< HEAD
-        for x in xs:
-            cur_img = torch.repeat_interleave(img, len(x), dim=0)
-            t = torch.tensor([5] * x.shape[0], device=current_device)
-            z_t = torch.cat((cur_img, x), dim=1)
-            pred_logits = self.denoise_model(z_t, t)
-            train_save(img, x, (pred_logits>=0).float(), torch.zeros_like(x), img_metas, t)
-            # cur_fine_probs = torch.zeros_like(x)
-            # for i in indices:
-            #     t = torch.tensor([i] * x.shape[0], device=current_device)
-            #     x, cur_fine_probs = self.p_sample(cur_img, x, cur_fine_probs, t)
-            # refine_save(xs[0], x)
-    
-        ori_shape = img_metas[0]['ori_shape'][:2]
-        img_shape = img_metas[0]['img_shape'][:2]
-        pad_shape = img_metas[0]['pad_shape'][:2]
-        refine_mask = F.interpolate(x, size=pad_shape, mode="bilinear")
-        refine_mask = refine_mask[:, :, :img_shape[0], :img_shape[1]]
-        refine_mask = F.interpolate(refine_mask, size=ori_shape, mode="bilinear")
-        refine_mask = (refine_mask >= 0.5).int()
-
-        x_last = F.interpolate(x_last.float().unsqueeze(1), size=pad_shape, mode="bilinear")
-        x_last = x_last[:, :, :img_shape[0], :img_shape[1]]
-        x_last = F.interpolate(x_last, size=ori_shape, mode="bilinear").squeeze(1)
-        x_last = x_last >= 0.5
-
-        multi_mask_save(x_last, refine_mask)
-        refine_mask = refine_mask[:, 0]
-
-        dt_bboxes = dt_bboxes.cpu().numpy()
-=======
-
-        cur_fine_probs = torch.zeros_like(x)
-        for i in indices:
-            t = torch.tensor([i] * x.shape[0], device=current_device)
-            x, cur_fine_probs = self.p_sample(object_imgs, x, cur_fine_probs, t)
+        res = []
+        for data in xs:
+            x, img = data
+            cur_fine_probs = torch.zeros_like(x)
+            for i in indices:
+                t = torch.tensor([i] * x.shape[0], device=current_device)
+                x, cur_fine_probs = self.p_sample(img, x, cur_fine_probs, t)
+            res.append(x)
+        res = torch.cat(res, dim=0)
         # refine_save(object_masks, x)
 
-        img_masks = _do_paste_mask(x, object_coors, img_metas)
+        img_masks = _do_paste_mask(res, object_coors, img_metas)
         # single_mask_save(x.squeeze(1), 'object')
         # single_mask_save(img_masks, 'pan')
 
->>>>>>> 9eba8ee17abbc62cad837364a8795854859487f2
         bboxes = dt_bboxes[0][:, :5]
         labels = dt_bboxes[0][:, 5]
         labels = labels.astype(int)
