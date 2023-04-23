@@ -50,12 +50,11 @@ train_pipeline = [
 
 test_pipeline = [
     dict(type='LoadImageFromFile'),
-    dict(type='LoadCoarseMasksNew', test_mode=True),
-    dict(type='Resize', img_scale=test_scale, keep_ratio=True),
+    dict(type='LoadCoarseMasksNew', test_mode=True, with_bbox=True),
+    # dict(type='Resize', img_scale=test_scale, keep_ratio=True),
     dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size=test_scale, img_only=True),
     dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'coarse_masks'])
+    dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
 ]
 
 
@@ -100,12 +99,7 @@ optimizer = dict(
     lr=1e-4,
     weight_decay=0,
     eps=1e-8,
-    betas=(0.9, 0.999),
-    paramwise_cfg=dict(
-        custom_keys={
-            'backbone': dict(lr_mult=0.01),
-            'neck': dict(lr_mult=0.01)
-        }))
+    betas=(0.9, 0.999))
 optimizer_config = dict(grad_clip=None)
 
 # learning policy

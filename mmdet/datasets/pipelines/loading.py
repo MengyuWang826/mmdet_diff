@@ -75,6 +75,7 @@ class LoadImageFromFile:
             img_bytes, flag=self.color_type, channel_order=self.channel_order)
         if self.to_float32:
             img = img.astype(np.float32)
+        
 
         results['filename'] = filename
         results['ori_filename'] = results['img_info']['filename']
@@ -744,11 +745,13 @@ class LoadCoarseMasks:
 class LoadCoarseMasksNew:
     def __init__(self,
                  with_bbox=False,
+                 with_lable=False,
                  test_mode=False,
                  area_thr=1024):
         self.test_mode = test_mode
         self.area_thr = area_thr 
         self.with_bbox = with_bbox
+        self.with_lable = with_lable
     
     def _poly2mask(self, mask_ann, img_h, img_w):
         """Private function to convert masks represented with polygon to
@@ -778,6 +781,7 @@ class LoadCoarseMasksNew:
         return mask
 
     def __call__(self, results):
+        valid_idx = None
         h, w = results['img_info']['height'], results['img_info']['width']
         coarse_masks = results['coarse_info']['masks']
         if not self.test_mode:
@@ -788,7 +792,7 @@ class LoadCoarseMasksNew:
                 coarse_masks = modify_boundary(gt_mask)
                 # Image.fromarray(gt_mask).save(f'results/gt.png')
                 # Image.fromarray(coarse_masks).save(f'results/modify.png')
-            results['coarse_masks'] = BitmapMasks([coarse_masks], h, w)
+            results['coarse_masks'] = BitmapMasks([coarse_masks], coarse_masks.shape[-2], coarse_masks.shape[-1])
         else:
             new_coarse_masks = []
             for mask in coarse_masks:
@@ -801,7 +805,17 @@ class LoadCoarseMasksNew:
             results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
         results['mask_fields'].append('coarse_masks')
         if self.with_bbox:
-            results['dt_bboxes'] = results['coarse_info']['bboxes'][valid_idx]
+            bboxes = results['coarse_info']['bboxes']
+            if valid_idx is not None:
+                assert len(bboxes) == len(valid_idx)
+                bboxes = bboxes[valid_idx]
+                results['dt_bboxes'] = bboxes
+        if self.with_lable:
+            lables = results['coarse_info']['lables']
+            if valid_idx is not None:
+                assert len(lables) == len(valid_idx)
+                lables = lables[valid_idx]
+                results['dt_lables'] = lables
         return results
 
 @PIPELINES.register_module()
@@ -881,6 +895,10 @@ class LoadPatchData:
     def __call__(self, results):
         results = self.ramdom_crop_object(results)
         results = self.ramdom_crop_patch(results)
+        if 0 in results['object_img'].shape:
+            return None
+        if 0 in results['patch_img'].shape:
+            return None
         del results['coarse_info']
         del results['ann_info']
         del results['mask_fields']
