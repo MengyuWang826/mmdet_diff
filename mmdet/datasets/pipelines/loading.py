@@ -798,7 +798,7 @@ class LoadCoarseMasksNew:
                 areas = new_coarse_masks.areas
                 valid_idx = areas >= self.area_thr
                 new_coarse_masks = new_coarse_masks.masks[valid_idx]
-        results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
+            results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
         results['mask_fields'].append('coarse_masks')
         if self.with_bbox:
             results['dt_bboxes'] = results['coarse_info']['bboxes'][valid_idx]

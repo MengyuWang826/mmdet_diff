@@ -84,10 +84,12 @@ class DiffRefinementor(BaseRefinementor):
         x_last = torch.cat((self._bitmapmasks_to_tensor(object_coarse_masks, current_device),
                             self._bitmapmasks_to_tensor(patch_coarse_masks, current_device)), dim=0)
         t = uniform_sampler(self.num_timesteps, img.shape[0], current_device)
+        # t = torch.tensor([5]*2, device=current_device)
         x_t = self.q_sample(x_start, x_last, t, current_device)
-        train_save(img, x_start, x_last, x_t, img_metas, t)
+        # train_save(img, x_start, x_last, x_t, img_metas, t)
         z_t = torch.cat((img, x_t), dim=1)
         pred_logits = self.denoise_model(z_t, t)
+        # train_save(img, x_last, x_t, (pred_logits>=0).float(), img_metas, t)
         iou_pred = self.cal_iou(x_start, pred_logits)
         losses = dict()
         losses['loss_mask'] = self.loss_mask(pred_logits, x_start)
@@ -137,22 +139,26 @@ class DiffRefinementor(BaseRefinementor):
         x_last = x_last.unsqueeze(1).float()
 
         num_ins = len(x_last)
-        if num_ins <= 8:
+        if num_ins <= 2:
             xs = [x_last]
         else:
             xs = []
-            for idx in range(0, num_ins, 8):
-                end = min(num_ins, idx+8)
+            for idx in range(0, num_ins, 2):
+                end = min(num_ins, idx+2)
                 xs.append(x_last[idx: end])
 
         indices = list(range(self.num_timesteps))[::-1]
         for x in xs:
             cur_img = torch.repeat_interleave(img, len(x), dim=0)
-            cur_fine_probs = torch.zeros_like(x)
-            for i in indices:
-                t = torch.tensor([i] * x.shape[0], device=current_device)
-                x, cur_fine_probs = self.p_sample(cur_img, x, cur_fine_probs, t)
-            refine_save(xs[0], x)
+            t = torch.tensor([5] * x.shape[0], device=current_device)
+            z_t = torch.cat((cur_img, x), dim=1)
+            pred_logits = self.denoise_model(z_t, t)
+            train_save(img, x, (pred_logits>=0).float(), torch.zeros_like(x), img_metas, t)
+            # cur_fine_probs = torch.zeros_like(x)
+            # for i in indices:
+            #     t = torch.tensor([i] * x.shape[0], device=current_device)
+            #     x, cur_fine_probs = self.p_sample(cur_img, x, cur_fine_probs, t)
+            # refine_save(xs[0], x)
     
         ori_shape = img_metas[0]['ori_shape'][:2]
         img_shape = img_metas[0]['img_shape'][:2]

@@ -269,7 +269,7 @@ class CollectionRefine(LVISV1Dataset):
             dict: Training data and annotation after pipeline with new keys 
                 introduced by pipeline.
         """
-        img_info = self.data_infos[-1]
+        img_info = self.data_infos[idx]
         ann_info = self.get_ann_info(img_info)
         if ann_info is None:
             return None

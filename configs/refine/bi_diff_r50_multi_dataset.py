@@ -63,8 +63,8 @@ dataset_type = 'CollectionRefine'
 img_root = 'data/'
 ann_root = 'data/lvis_annotations/'
 train_dataloader=dict(
-    samples_per_gpu=4,
-    workers_per_gpu=4)
+    samples_per_gpu=1,
+    workers_per_gpu=1)
 test_dataloader=dict(
     samples_per_gpu=1,
     workers_per_gpu=1)
@@ -113,22 +113,22 @@ lr_config = dict(
     policy='step',
     gamma=0.1,
     by_epoch=False,
-    step=[8000, 9000],
+    step=[160000, 180000],
     warmup='linear',
     warmup_by_epoch=False,
     warmup_ratio=1.0,  # no warmup
     warmup_iters=10)
 
-max_iters = 10000
+max_iters = 200000
 runner = dict(type='IterBasedRunner', max_iters=max_iters)
 
 log_config = dict(
-    interval=50,
+    interval=100,
     hooks=[
         dict(type='TextLoggerHook', by_epoch=False),
         # dict(type='TensorboardLoggerHook', by_epoch=False)
     ])
-interval = 1000
+interval = 5000
 workflow = [('train', interval)]
 checkpoint_config = dict(
     by_epoch=False, interval=interval, save_last=True, max_keep_ckpts=40)
@@ -136,4 +136,5 @@ checkpoint_config = dict(
 evaluation = dict(
     interval=interval,
     metric=['bbox', 'segm'])
+
 
