@@ -231,6 +231,8 @@ class Resize:
     def _resize_img(self, results):
         """Resize images with ``results['scale']``."""
         for key in results.get('img_fields', ['img']):
+            if key not in results or results[key] is None:
+                return None
             if self.keep_ratio:
                 img, scale_factor = mmcv.imrescale(
                     results[key],

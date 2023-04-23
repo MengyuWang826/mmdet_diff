@@ -50,12 +50,11 @@ train_pipeline = [
 
 test_pipeline = [
     dict(type='LoadImageFromFile'),
-    dict(type='LoadCoarseMasksNew', test_mode=True),
-    dict(type='Resize', img_scale=test_scale, keep_ratio=True),
+    dict(type='LoadCoarseMasksNew', test_mode=True, with_bbox=True),
+    # dict(type='Resize', img_scale=test_scale, keep_ratio=True),
     dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size=test_scale, img_only=True),
     dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'coarse_masks'])
+    dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
 ]
 
 
@@ -100,12 +99,7 @@ optimizer = dict(
     lr=1e-4,
     weight_decay=0,
     eps=1e-8,
-    betas=(0.9, 0.999),
-    paramwise_cfg=dict(
-        custom_keys={
-            'backbone': dict(lr_mult=0.01),
-            'neck': dict(lr_mult=0.01)
-        }))
+    betas=(0.9, 0.999))
 optimizer_config = dict(grad_clip=None)
 
 # learning policy
@@ -113,22 +107,22 @@ lr_config = dict(
     policy='step',
     gamma=0.1,
     by_epoch=False,
-    step=[8000, 9000],
+    step=[160000, 180000],
     warmup='linear',
     warmup_by_epoch=False,
     warmup_ratio=1.0,  # no warmup
     warmup_iters=10)
 
-max_iters = 10000
+max_iters = 200000
 runner = dict(type='IterBasedRunner', max_iters=max_iters)
 
 log_config = dict(
-    interval=50,
+    interval=100,
     hooks=[
         dict(type='TextLoggerHook', by_epoch=False),
         # dict(type='TensorboardLoggerHook', by_epoch=False)
     ])
-interval = 1000
+interval = 5000
 workflow = [('train', interval)]
 checkpoint_config = dict(
     by_epoch=False, interval=interval, save_last=True, max_keep_ckpts=40)

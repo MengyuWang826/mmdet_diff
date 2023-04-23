@@ -244,7 +244,7 @@ class CollectionRefine(LVISV1Dataset):
         img_id = img_info['id']
         coarse_masks = []
         bboxes = []
-        labels = []
+        lables = []
         coarse_dts = self.coarse_infos[img_id]
         for dt in coarse_dts:
             label = self.cat2label[dt['category_id']]
@@ -253,11 +253,11 @@ class CollectionRefine(LVISV1Dataset):
             bbox.append(dt['score'])
             bbox.append(label)
             bboxes.append(bbox)
-            labels.append(label)
+            lables.append(label)
         bboxes = np.array(bboxes)
         bboxes[:, 2] = bboxes[:, 2] + bboxes[:, 0]
         bboxes[:, 3] = bboxes[:, 3] + bboxes[:, 1]
-        return dict(masks=coarse_masks, bboxes=bboxes, labels=labels)
+        return dict(masks=coarse_masks, bboxes=bboxes, lables=lables)
 
     def prepare_train_img(self, idx):
         """Get training data and annotations after pipeline.
@@ -269,7 +269,7 @@ class CollectionRefine(LVISV1Dataset):
             dict: Training data and annotation after pipeline with new keys 
                 introduced by pipeline.
         """
-        img_info = self.data_infos[-1]
+        img_info = self.data_infos[idx]
         ann_info = self.get_ann_info(img_info)
         if ann_info is None:
             return None

@@ -1,12 +1,12 @@
 checkpoint_config = dict(
-    interval=1000, by_epoch=False, save_last=True, max_keep_ckpts=40)
+    interval=5000, by_epoch=False, save_last=True, max_keep_ckpts=40)
 log_config = dict(
-    interval=50, hooks=[dict(type='TextLoggerHook', by_epoch=False)])
+    interval=100, hooks=[dict(type='TextLoggerHook', by_epoch=False)])
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 load_from = None
 resume_from = None
-workflow = [('train', 1000)]
+workflow = [('train', 5000)]
 opencv_num_threads = 0
 mp_start_method = 'fork'
 auto_scale_lr = dict(enable=False, base_batch_size=16)
@@ -33,6 +33,7 @@ model = dict(
     test_cfg=dict(pad_width=20))
 object_size = 256
 patch_size = 128
+test_scale = (1024, 1024)
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
@@ -61,16 +62,16 @@ train_pipeline = [
 ]
 test_pipeline = [
     dict(type='LoadImageFromFile'),
-    dict(type='LoadCoarseMasks', with_bbox=True, test_mode=True),
-    dict(type='Resize', img_scale=256, keep_ratio=True),
+    dict(type='LoadCoarseMasksNew', test_mode=True),
+    dict(type='Resize', img_scale=(1024, 1024), keep_ratio=True),
     dict(
         type='Normalize',
         mean=[123.675, 116.28, 103.53],
         std=[58.395, 57.12, 57.375],
         to_rgb=True),
-    dict(type='Pad', size=256),
+    dict(type='Pad', size=(1024, 1024), img_only=True),
     dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
+    dict(type='Collect', keys=['img', 'coarse_masks'])
 ]
 dataset_type = 'CollectionRefine'
 img_root = 'data/'
@@ -113,16 +114,16 @@ data = dict(
     val=dict(
         pipeline=[
             dict(type='LoadImageFromFile'),
-            dict(type='LoadCoarseMasks', with_bbox=True, test_mode=True),
-            dict(type='Resize', img_scale=256, keep_ratio=True),
+            dict(type='LoadCoarseMasksNew', test_mode=True),
+            dict(type='Resize', img_scale=(1024, 1024), keep_ratio=True),
             dict(
                 type='Normalize',
                 mean=[123.675, 116.28, 103.53],
                 std=[58.395, 57.12, 57.375],
                 to_rgb=True),
-            dict(type='Pad', size=256),
+            dict(type='Pad', size=(1024, 1024), img_only=True),
             dict(type='DefaultFormatBundle'),
-            dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
+            dict(type='Collect', keys=['img', 'coarse_masks'])
         ],
         type='CollectionRefine',
         ann_file='data/lvis_annotations/lvis_v1_val_cocofied.json',
@@ -132,45 +133,38 @@ data = dict(
     test=dict(
         pipeline=[
             dict(type='LoadImageFromFile'),
-            dict(type='LoadCoarseMasks', with_bbox=True, test_mode=True),
-            dict(type='Resize', img_scale=256, keep_ratio=True),
+            dict(type='LoadCoarseMasksNew', test_mode=True),
+            dict(type='Resize', img_scale=(1024, 1024), keep_ratio=True),
             dict(
                 type='Normalize',
                 mean=[123.675, 116.28, 103.53],
                 std=[58.395, 57.12, 57.375],
                 to_rgb=True),
-            dict(type='Pad', size=256),
+            dict(type='Pad', size=(1024, 1024), img_only=True),
             dict(type='DefaultFormatBundle'),
-            dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
+            dict(type='Collect', keys=['img', 'coarse_masks'])
         ],
         type='CollectionRefine',
         ann_file='data/lvis_annotations/lvis_v1_val_cocofied.json',
         coarse_file='data/lvis_annotations/maskrcnn_lvis_val_cocofied.json',
         img_prefix='data/'),
     test_dataloader=dict(samples_per_gpu=1, workers_per_gpu=1))
-evaluation = dict(interval=1000, metric=['bbox', 'segm'])
+evaluation = dict(interval=5000, metric=['bbox', 'segm'])
 optimizer = dict(
-    type='AdamW',
-    lr=0.0001,
-    weight_decay=0,
-    eps=1e-08,
-    betas=(0.9, 0.999),
-    paramwise_cfg=dict(
-        custom_keys=dict(backbone=dict(lr_mult=0.01), neck=dict(
-            lr_mult=0.01))))
+    type='AdamW', lr=0.0001, weight_decay=0, eps=1e-08, betas=(0.9, 0.999))
 optimizer_config = dict(grad_clip=None)
 lr_config = dict(
     policy='step',
     gamma=0.1,
     by_epoch=False,
-    step=[8000, 9000],
+    step=[160000, 180000],
     warmup='linear',
     warmup_by_epoch=False,
     warmup_ratio=1.0,
     warmup_iters=10)
-max_iters = 10000
-runner = dict(type='IterBasedRunner', max_iters=10000)
-interval = 1000
+max_iters = 200000
+runner = dict(type='IterBasedRunner', max_iters=200000)
+interval = 5000
 work_dir = './work_dirs/bi_diff_r50_multi_dataset'
 auto_resume = False
-gpu_ids = range(0, 7)
+gpu_ids = range(0, 8)

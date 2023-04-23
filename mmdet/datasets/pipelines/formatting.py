@@ -246,6 +246,14 @@ class DefaultFormatBundle:
                 results[key],
                 padding_value=self.pad_val['masks'],
                 cpu_only=True)
+        if 'dt_lables' in results:
+            results['dt_lables'] = DC(
+                results['dt_lables'],
+                cpu_only=True)
+        if 'dt_bboxes' in results:
+            results['dt_bboxes'] = DC(
+                results['dt_bboxes'],
+                cpu_only=True)
         return results
 
     def _add_default_meta_keys(self, results):
