@@ -1,14 +1,28 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import contextlib
+import io
+import itertools
+import logging
+import os.path as osp
+import tempfile
+import warnings
+from collections import OrderedDict
 import json
+
 import mmcv
 import numpy as np
+from mmcv.utils import print_log
+from terminaltables import AsciiTable
+
+from mmdet.core import eval_recalls
+from .api_wrappers import COCO, COCOeval
 from .builder import DATASETS
-from .pipelines import Compose
 from .coco import CocoDataset
 
 
 @DATASETS.register_module()
 class CocoRefine(CocoDataset):
+
     CLASSES = ('person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
                'train', 'truck', 'boat', 'traffic light', 'fire hydrant',
                'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog',
@@ -45,63 +59,14 @@ class CocoRefine(CocoDataset):
                (127, 167, 115), (59, 105, 106), (142, 108, 45), (196, 172, 0),
                (95, 54, 80), (128, 76, 255), (201, 57, 1), (246, 0, 122),
                (191, 162, 208)]
-
-    def __init__(self,
-                 ann_file,
-                 coarse_file,
-                 pipeline,
-                 img_prefix='',
-                 proposal_file=None,
-                 mode='train',
-                 file_client_args=dict(backend='disk')):
-        self.ann_file = ann_file
-        self.coarse_file = coarse_file
-        self.img_prefix = img_prefix
-        self.proposal_file = proposal_file
-        self.mode = mode
-        self.file_client = mmcv.FileClient(**file_client_args)
-
-        # load annotations (and proposals)
-        self.data_infos = self.load_annotations(self.ann_file)
-        self.coarse_infos = self.load_coarse(self.coarse_file)
-        self.coarse_imgs = list(self.coarse_infos)
-
-        # processing pipeline
-        self.pipeline = Compose(pipeline)
-        self.CLASSES = self.get_classes()
-        if mode == 'train':
-            self._set_group_flag()
-
-    @classmethod
-    def get_classes(cls, classes=None):
-        """Get class names of current dataset.
-
-        Args:
-            classes (Sequence[str] | str | None): If classes is None, use
-                default CLASSES defined by builtin dataset. If classes is a
-                string, take it as a file name. The file contains the name of
-                classes where each line contains one class name. If classes is
-                a tuple or list, override the CLASSES defined by the dataset.
-
-        Returns:
-            tuple[str] or list[str]: Names of categories of the dataset.
-        """
-        if classes is None:
-            return cls.CLASSES
-
-        if isinstance(classes, str):
-            # take it as a file path
-            class_names = mmcv.list_from_file(classes)
-        elif isinstance(classes, (tuple, list)):
-            class_names = classes
-        else:
-            raise ValueError(f'Unsupported type {type(classes)} of classes.')
-
-        return class_names
+    
+    def __init__(self, coarse_file, **kwargs):
+        self.coarse_infos = self.load_coarse(coarse_file)
+        super(CocoRefine, self).__init__(**kwargs)
     
     def load_coarse(self, coarse_file):
-        coarse_infos = {}
         coarse_dts = json.load(open(coarse_file))
+        coarse_infos = {}
         for dt in coarse_dts:
             img_id = dt['image_id']
             if img_id not in coarse_infos:
@@ -109,50 +74,40 @@ class CocoRefine(CocoDataset):
             coarse_infos[img_id].append(dt)
         return coarse_infos
 
-    def __len__(self):
-        """Total number of samples of data."""
-        if self.mode in ('train', 'val'):
-            return len(self.data_infos)
-        else:
-            return len(self.coarse_imgs)
+    def load_annotations(self, ann_file):
+        """Load annotation from COCO style annotation file.
 
-    def get_ann_info(self, img_id, img_info):
-        ann_ids = self.coco.get_ann_ids(img_ids=[img_id])
-        ann_info = self.coco.load_anns(ann_ids)
-        gt_masks_ann = []
-        labels = []
-        for i, ann in enumerate(ann_info):
-            if ann.get('iscrowd', False):
-                continue
-            x1, y1, w, h = ann['bbox']
-            inter_w = max(0, min(x1 + w, img_info['width']) - max(x1, 0))
-            inter_h = max(0, min(y1 + h, img_info['height']) - max(y1, 0))
-            if inter_w * inter_h == 0:
-                continue
-            if ann['area'] <= 0 or w < 1 or h < 1:
-                continue
-            gt_masks_ann.append(ann.get('segmentation', None))
-            labels.append(self.cat2label[ann['category_id']])
-        if len(gt_masks_ann) == 0:
-            return None
-        return dict(masks=gt_masks_ann, labels=labels)
+        Args:
+            ann_file (str): Path of annotation file.
+
+        Returns:
+            list[dict]: Annotation info from COCO api.
+        """
+
+        self.coco = COCO(ann_file)
+        # The order of returned `cat_ids` will not
+        # change with the order of the CLASSES
+        self.cat_ids = self.coco.get_cat_ids(cat_names=self.CLASSES)
+
+        self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
+        self.img_ids = list(self.coarse_infos)
+        data_infos = []
+        total_ann_ids = []
+        for i in self.img_ids:
+            info = self.coco.load_imgs([i])[0]
+            info['filename'] = info['file_name']
+            data_infos.append(info)
+            ann_ids = self.coco.get_ann_ids(img_ids=[i])
+            total_ann_ids.extend(ann_ids)
+        assert len(set(total_ann_ids)) == len(
+            total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
+        return data_infos
     
-    def get_coarse_info(self, img_id):
-        coarse_masks = []
-        labels = []
-        if img_id not in self.coarse_infos:
-            return dict(masks=coarse_masks, labels=labels)
-        else:
-            coarse_dts = self.coarse_infos[img_id]
-            for dt in coarse_dts:
-                coarse_masks.append(dt['segmentation'])
-                labels.append(self.cat2label[dt['category_id']])
-        return dict(masks=coarse_masks, labels=labels)
-
-    def get_coarse_info_test(self, img_id):
+    def get_coarse_info_test(self, img_info):
+        img_id = img_info['id']
         coarse_masks = []
         bboxes = []
-        labels = []
+        lables = []
         coarse_dts = self.coarse_infos[img_id]
         for dt in coarse_dts:
             label = self.cat2label[dt['category_id']]
@@ -161,79 +116,12 @@ class CocoRefine(CocoDataset):
             bbox.append(dt['score'])
             bbox.append(label)
             bboxes.append(bbox)
-            labels.append(label)
+            lables.append(label)
         bboxes = np.array(bboxes)
         bboxes[:, 2] = bboxes[:, 2] + bboxes[:, 0]
         bboxes[:, 3] = bboxes[:, 3] + bboxes[:, 1]
-        return dict(masks=coarse_masks, bboxes=bboxes, labels=labels)
-
-    def pre_pipeline(self, results):
-        """Prepare results dict for pipeline."""
-        results['img_prefix'] = self.img_prefix
-        results['proposal_file'] = self.proposal_file
-        results['mask_fields'] = []
-
-    def __getitem__(self, idx):
-        """Get training/test data after pipeline.
-
-        Args:
-            idx (int): Index of data.
-
-        Returns:
-            dict: Training/test data (with annotation if `test_mode` is set \
-                True).
-        """
-        if self.mode == 'train':
-            while True:
-                data = self.prepare_train_img(idx)
-                if data is None:
-                    idx = self._rand_another(idx)
-                    continue
-                return data
-        elif self.mode == 'val':
-            return self.prepare_val_img(idx)
-        else:
-            return self.prepare_test_img(idx)
-        
-
-    def prepare_train_img(self, idx):
-        """Get training data and annotations after pipeline.
-
-        Args:
-            idx (int): Index of data.
-
-        Returns:
-            dict: Training data and annotation after pipeline with new keys \
-                introduced by pipeline.
-        """
-
-        img_info = self.data_infos[idx]
-        img_id = img_info['id']
-        ann_info = self.get_ann_info(img_id, img_info)
-        if ann_info is None:
-            return None
-        coarse_info = self.get_coarse_info(img_id)
-        results = dict(img_info=img_info, ann_info=ann_info, coarse_info=coarse_info)
-        self.pre_pipeline(results)
-        return self.pipeline(results)
+        return dict(masks=coarse_masks, bboxes=bboxes, lables=lables)
     
-    def prepare_val_img(self, idx):
-        """Get testing data after pipeline.
-
-        Args:
-            idx (int): Index of data.
-
-        Returns:
-            dict: Testing data after pipeline with new keys introduced by \
-                pipeline.
-        """
-        img_info = self.data_infos[idx]
-        img_id = img_info['id']
-        coarse_info = self.get_coarse_info_test(img_id)
-        results = dict(img_info=img_info, coarse_info=coarse_info)
-        self.pre_pipeline(results)
-        return self.pipeline(results)
-
     def prepare_test_img(self, idx):
         """Get testing data after pipeline.
 
@@ -244,12 +132,13 @@ class CocoRefine(CocoDataset):
             dict: Testing data after pipeline with new keys introduced by \
                 pipeline.
         """
-        img_id = self.coarse_imgs[idx]
-        img_info = self.coco.load_imgs([img_id])[0]
-        img_info['filename'] = img_info['file_name']
-        coarse_info = self.get_coarse_info_test(img_id)
+        img_info = self.data_infos[idx]
+
+        # img_info = self.coco.load_imgs([252219])[0]
+        # img_info['filename'] = img_info['coco_url'].replace(
+        #     'http://images.cocodataset.org/', '')
+        
+        coarse_info = self.get_coarse_info_test(img_info)
         results = dict(img_info=img_info, coarse_info=coarse_info)
         self.pre_pipeline(results)
         return self.pipeline(results)
-
-

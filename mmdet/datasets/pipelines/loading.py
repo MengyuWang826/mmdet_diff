@@ -746,10 +746,8 @@ class LoadCoarseMasksNew:
     def __init__(self,
                  with_bbox=False,
                  with_lable=False,
-                 test_mode=False,
-                 area_thr=1024):
+                 test_mode=False):
         self.test_mode = test_mode
-        self.area_thr = area_thr 
         self.with_bbox = with_bbox
         self.with_lable = with_lable
     
@@ -781,7 +779,6 @@ class LoadCoarseMasksNew:
         return mask
 
     def __call__(self, results):
-        valid_idx = None
         h, w = results['img_info']['height'], results['img_info']['width']
         coarse_masks = results['coarse_info']['masks']
         if not self.test_mode:
@@ -797,25 +794,16 @@ class LoadCoarseMasksNew:
             new_coarse_masks = []
             for mask in coarse_masks:
                 new_coarse_masks.append(self._poly2mask(mask, h, w))
-            if self.area_thr:
-                new_coarse_masks = BitmapMasks(new_coarse_masks, h, w)
-                areas = new_coarse_masks.areas
-                valid_idx = areas >= self.area_thr
-                new_coarse_masks = new_coarse_masks.masks[valid_idx]
             results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
         results['mask_fields'].append('coarse_masks')
         if self.with_bbox:
             bboxes = results['coarse_info']['bboxes']
-            if valid_idx is not None:
-                assert len(bboxes) == len(valid_idx)
-                bboxes = bboxes[valid_idx]
-                results['dt_bboxes'] = bboxes
+            results['dt_bboxes'] = bboxes
+            assert len(results['dt_bboxes']) == len(results['coarse_masks'])
         if self.with_lable:
             lables = results['coarse_info']['lables']
-            if valid_idx is not None:
-                assert len(lables) == len(valid_idx)
-                lables = lables[valid_idx]
-                results['dt_lables'] = lables
+            results['dt_lables'] = lables
+            assert len(results['dt_lables']) == len(results['coarse_masks'])
         return results
 
 @PIPELINES.register_module()

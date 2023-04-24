@@ -3,6 +3,8 @@ import mmcv
 import os
 import os.path as osp
 import numpy as np
+from lvis import LVIS
+from .api_wrappers import COCO
 from numpy.core.fromnumeric import shape
 from .builder import DATASETS
 from .pipelines import Compose
@@ -98,30 +100,16 @@ class CollectionRefine(LVISV1Dataset):
             self._set_group_flag()
     
     def load_annotations(self, ann_file):
-        try:
-            import lvis
-            if getattr(lvis, '__version__', '0') >= '10.5.3':
-                warnings.warn(
-                    'mmlvis is deprecated, please install official lvis-api by "pip install git+https://github.com/lvis-dataset/lvis-api.git"',  # noqa: E501
-                    UserWarning)
-            from lvis import LVIS
-        except ImportError:
-            raise ImportError(
-                'Package lvis is not installed. Please run "pip install git+https://github.com/lvis-dataset/lvis-api.git".'  # noqa: E501
-            )
         self.coco = LVIS(ann_file)
         self.cat_ids = self.coco.get_cat_ids()
         self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
         if self.test_mode:
-            self.img_ids = list(self.coarse_infos)
-        else:
+            self.img_ids = list(self.coarse_infos) 
+        else: 
             self.img_ids = self.coco.get_img_ids()
         data_infos = []
         for i in self.img_ids:
             info = self.coco.load_imgs([i])[0]
-            # coco_url is used in LVISv1 instead of file_name
-            # e.g. http://images.cocodataset.org/train2017/000000391895.jpg
-            # train/val split in specified in url
             info['filename'] = info['coco_url'].replace(
                 'http://images.cocodataset.org/', '')
             info['filename'] = 'coco/' + info['filename']

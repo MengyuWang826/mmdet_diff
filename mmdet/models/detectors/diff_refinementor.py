@@ -55,7 +55,7 @@ class DiffRefinementor(BaseRefinementor):
                  test_cfg,
                  loss_mask=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
                  loss_texture=dict(type='TextureL1Loss', loss_weight=5.0),
-                 num_classes=77,
+                 num_classes=80,
                  init_cfg=None):
         super(DiffRefinementor, self).__init__(task=task, init_cfg=init_cfg)
 
@@ -140,46 +140,51 @@ class DiffRefinementor(BaseRefinementor):
                              dt_bboxes,
                              **kwargs):
         """Test without augmentation."""
-        if len(coarse_masks[0]) == 0:
-            bbox_results = [np.zeros([0, 4]) for _ in range(self.num_classes)]
-            mask_results = [[] for _ in range(self.num_classes)]
-            return [(bbox_results, mask_results)]
         
-        current_device = img.device
-        object_imgs, object_masks, scale_factors, object_coors = self._get_object_input(img, coarse_masks, img_metas, current_device)
+        coarse_masks, tiny_coarse_masks, dt_bboxes = self._filter_tiny_instance(coarse_masks, dt_bboxes)
 
-        num_ins = len(object_masks)
-        if num_ins <= 16:
-            xs = [(object_masks, object_imgs)]
+        if len(coarse_masks) == 0:
+            assert len(tiny_coarse_masks) > 0
+            img_masks = tiny_coarse_masks
         else:
-            xs = []
-            for idx in range(0, num_ins, 16):
-                end = min(num_ins, idx+16)
-                xs.append((object_masks[idx: end], object_imgs[idx:end]))
-
-        indices = list(range(self.num_timesteps))[::-1]
-        res = []
-        for data in xs:
-            x, img = data
-            cur_fine_probs = torch.zeros_like(x)
-            for i in indices:
-                t = torch.tensor([i] * x.shape[0], device=current_device)
-                x, cur_fine_probs = self.p_sample(img, x, cur_fine_probs, t)
-            res.append(x)
-        res = torch.cat(res, dim=0)
+            current_device = img.device
+            object_imgs, object_masks, scale_factors, object_coors = self._get_object_input(img, coarse_masks, img_metas, current_device)
+            batch_max = self.test_cfg.get('batch_max', 0)
+            num_ins = len(object_masks)
+            if num_ins <= batch_max:
+                xs = [(object_masks, object_imgs, scale_factors)]
+            else:
+                xs = []
+                for idx in range(0, num_ins, batch_max):
+                    end = min(num_ins, idx + batch_max)
+                    xs.append((object_masks[idx: end], object_imgs[idx:end], scale_factors[idx:end]))
+            res = self.p_sample_loop(xs, current_device)
+            img_masks = _do_paste_mask(res, object_coors, img_metas)
+            img_masks = np.concatenate((img_masks, tiny_coarse_masks), axis=0)
+            
         # refine_save(object_masks, x)
 
-        img_masks = _do_paste_mask(res, object_coors, img_metas)
+        
         # single_mask_save(x.squeeze(1), 'object')
         # single_mask_save(img_masks, 'pan')
 
-        bboxes = dt_bboxes[0][:, :5]
-        labels = dt_bboxes[0][:, 5]
+        assert len(img_masks) == len(dt_bboxes)
+        bboxes = dt_bboxes[:, :5]
+        labels = dt_bboxes[:, 5]
         labels = labels.astype(int)
         bbox_results = self._format_bboxes_results(bboxes, labels)
         mask_results = self._format_mask_results(img_masks, labels)
         return [(bbox_results, mask_results)]
     
+    def _filter_tiny_instance(self, coarse_masks, dt_bboxes):
+        area_thr = self.test_cfg.get('area_thr', 0)
+        valid_idx = coarse_masks[0].areas >= area_thr
+        invalid_idx = ~ valid_idx
+        tiny_dt_bboxes = dt_bboxes[0][invalid_idx]
+        dt_bboxes = dt_bboxes[0][valid_idx]
+        dt_bboxes = np.concatenate((dt_bboxes, tiny_dt_bboxes), axis=0)
+        return coarse_masks[0].masks[valid_idx], coarse_masks[0].masks[invalid_idx], dt_bboxes
+
     def _get_pan_input(self, img, coarse_masks, img_metas, current_device):
         img_h, img_w = img_metas[0]['img_shape'][:2]
         coarse_masks = coarse_masks[0].resize((256, 256))
@@ -198,18 +203,20 @@ class DiffRefinementor(BaseRefinementor):
     def _get_object_input(self, img, coarse_masks, img_metas, current_device):
         img_h, img_w = img_metas[0]['img_shape'][:2]
         object_imgs, object_masks, scale_factors, object_coors = [], [], [], []
-        for mask in coarse_masks[0].masks:
+        object_out_size = self.test_cfg.get('objtct_size', 256)
+        pad_width = self.test_cfg.get('pad_width', 0)
+        for mask in coarse_masks:
             x_1, y_1, x_2, y_2 = mask2bbox(mask)
             object_h, object_w = y_2 - y_1, x_2 - x_1
-            if object_h > 256 or object_w > 256:
-                object_size = max(object_h, object_w) + 40
+            if object_h > object_out_size or object_w > object_out_size:
+                object_size = max(object_h, object_w) + pad_width
             else:
-                object_size = 256
+                object_size = object_out_size
             if img_h < object_size or img_w < object_size:
-                object_imgs.append(F.interpolate(img, size=(256, 256), mode='bilinear'))
+                object_imgs.append(F.interpolate(img, size=(object_out_size, object_out_size), mode='bilinear'))
                 mask = torch.tensor(mask, device=current_device, dtype=torch.float32)
-                object_masks.append(F.interpolate(mask.unsqueeze(0).unsqueeze(0), size=(256, 256), mode='bilinear'))
-                scale_factors.append((256/img_h, 256/img_w))
+                object_masks.append(F.interpolate(mask.unsqueeze(0).unsqueeze(0), size=(object_out_size, object_out_size), mode='bilinear'))
+                scale_factors.append((object_out_size/img_h, object_out_size/img_w))
                 object_coors.append(torch.tensor((0, 0, img_w, img_h), device=current_device))
             else:
                 x_1_ob, x_2_ob = self._get_object_crop_coor(x_1, x_2, img_w, object_size)
@@ -218,14 +225,28 @@ class DiffRefinementor(BaseRefinementor):
                 object_mask = torch.tensor(mask[y_1_ob: y_2_ob, x_1_ob: x_2_ob], 
                                            device=current_device,
                                            dtype=torch.float32)
-                object_imgs.append(F.interpolate(object_img, size=(256, 256), mode='bilinear'))
-                object_masks.append(F.interpolate(object_mask.unsqueeze(0).unsqueeze(0), size=(256, 256), mode='bilinear'))
-                scale_factors.append((256/(y_2_ob-y_1_ob), 256/(x_2_ob-x_1_ob)))
+                object_imgs.append(F.interpolate(object_img, size=(object_out_size, object_out_size), mode='bilinear'))
+                object_masks.append(F.interpolate(object_mask.unsqueeze(0).unsqueeze(0), size=(object_out_size, object_out_size), mode='bilinear'))
+                scale_factors.append((object_out_size/(y_2_ob-y_1_ob), object_out_size/(x_2_ob-x_1_ob)))
                 object_coors.append(torch.tensor((x_1_ob, y_1_ob, x_2_ob, y_2_ob), device=current_device))
         object_imgs = torch.cat(object_imgs, dim=0)
         object_masks = torch.cat(object_masks, dim=0)
         object_coors = torch.stack(object_coors, dim=0)
         return object_imgs, object_masks, scale_factors, object_coors
+    
+    def p_sample_loop(self, xs, current_device):
+        indices = list(range(self.num_timesteps))[::-1]
+        res = []
+        for data in xs:
+            x, img, scale_factors = data
+            cur_fine_probs = torch.zeros_like(x)
+            for i in indices:
+                t = torch.tensor([i] * x.shape[0], device=current_device)
+                x, cur_fine_probs = self.p_sample(img, x, cur_fine_probs, t)
+                print(cur_fine_probs[0][0])
+            res.append(x)
+        res = torch.cat(res, dim=0)
+        return res
 
     def p_sample(self, img, x, cur_fine_probs, t):
         z = torch.cat((img, x), dim=1)
@@ -240,9 +261,8 @@ class DiffRefinementor(BaseRefinementor):
         sample_noise = torch.rand(size=x.shape, device=x.device)
         fine_map = (sample_noise < cur_fine_probs).float()
         x_prev = pred_x_start * fine_map + x * (1 - fine_map)
-
-        # single_mask_save(pred_x_start, t, 'start')
-        # single_mask_save(x_prev, t, 'prev')
+        # single_mask_save(cur_fine_probs, t, 'fine_probs')
+        # sample_save(x, pred_x_start, x_prev)
         return x_prev, cur_fine_probs
     
     def _format_bboxes_results(self,bboxes, labels):
@@ -262,7 +282,6 @@ class DiffRefinementor(BaseRefinementor):
         inter: [[]*n]
         each is a ori_shape binary mask, shape[h, w] bool np.array
         '''
-        masks = masks.detach().cpu().numpy()
         cls_masks = [[] for _ in range(self.num_classes)]
         for i in range(len(masks)):
             cls_masks[labels[i]].append(masks[i])
@@ -307,7 +326,8 @@ def _do_paste_mask(masks, object_coors, img_metas):
 
     img_masks = F.grid_sample(
         masks.to(dtype=torch.float32), grid, align_corners=False)
-    return img_masks[:, 0]
+    img_masks = img_masks[:, 0].detach().cpu().numpy()
+    return img_masks
 
 @torch.no_grad()
 def generate_block_target(mask, area):
@@ -417,6 +437,19 @@ def refine_save(coarse, refine):
         Image.fromarray(out2).save(f'results/{idx}.png')
         idx += 1
 
+def sample_save(x, x_start, x_prev):
+    x = x.squeeze(1).cpu().numpy().astype(np.uint8)
+    x = x * 255
+    x_start = x_start.squeeze(1).cpu().numpy().astype(np.uint8)
+    x_start = x_start * 255
+    x_prev = x_prev.squeeze(1).cpu().numpy().astype(np.uint8)
+    x_prev = x_prev * 255
+    idx = 0
+    for xt, coarse_mask, refine_mask in zip(x, x_start, x_prev):
+        out2 = np.concatenate((xt, coarse_mask, refine_mask), axis=-1)
+        Image.fromarray(out2).save(f'results/{idx}.png')
+        idx += 1
+
 def quad_refine_save(coarse, refine):
     coarse = coarse.cpu().numpy().astype(np.uint8)
     coarse = coarse * 255
@@ -428,8 +461,8 @@ def quad_refine_save(coarse, refine):
         Image.fromarray(out2).save(f'results/{idx}.png')
         idx += 1
 
-def single_mask_save(masks, file_name):
-    masks = masks.cpu().numpy().astype(np.uint8)
-    masks = masks * 255
+def single_mask_save(masks, t, file_name):
+    masks = masks.squeeze(1).cpu().numpy()
+    masks = (masks * 255).astype(np.uint8)
     for i, mask in enumerate(masks):
-        Image.fromarray(mask).save(f'results/{file_name}_{i}.png')
+        Image.fromarray(mask).save(f'results/{file_name}_{i}_{t}.png')

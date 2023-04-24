@@ -2,6 +2,9 @@ _base_ = [
     '../_base_/default_runtime.py'
 ]
 
+object_size = 256
+patch_size = 128
+
 model = dict(
     type='DiffRefinementor',
     task='instance',
@@ -29,11 +32,12 @@ model = dict(
     train_cfg=dict(
         pad_width=20),
     test_cfg=dict(
-        pad_width=20))  
+        pad_width=40,
+        object_size=object_size,
+        patch_size=patch_size,
+        batch_max=16,
+        area_thr=512)) 
 
-object_size = 256
-patch_size = 128
-test_scale=(1024, 1024)
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
@@ -88,7 +92,7 @@ data = dict(
         pipeline=test_pipeline,
         type=dataset_type,
         ann_file=ann_root + 'lvis_v1_val_cocofied.json',
-        coarse_file=ann_root + 'maskrcnn_lvis_val_cocofied.json',
+        coarse_file='all_json/coarse_json_cocofiedlvis/transfiner_r50_3x_deform.json',
         img_prefix=img_root),
     test_dataloader=test_dataloader)
 evaluation = dict(metric=['bbox', 'segm'])
