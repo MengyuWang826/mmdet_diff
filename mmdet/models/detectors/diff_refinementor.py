@@ -245,7 +245,7 @@ class DiffRefinementor(BaseRefinementor):
         orisize_flag = torch.tensor(orisize_flag, device=current_device)
         return object_imgs, object_masks, orisize_flag, object_coors
     
-    def local_refine(masks):
+    def local_refine(self, masks):
         return masks
     
     def p_sample_loop(self, xs, current_device):

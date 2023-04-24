@@ -22,7 +22,7 @@ def val_coco(result_path, ann_path, val_type):
 
 if __name__ =='__main__':
     gt_json = 'data/lvis_annotations/lvis_v1_val_cocofied.json'
-    dt_json = 'all_json/refine_json/transfiner_r50_3x_deform.json'
+    dt_json = 'data/lvis_annotations/maskrcnn_lvis_val_cocofied.json'
     dataset = 'lvis'
     if dataset == 'coco':
         a = val_coco(dt_json, gt_json, 'segm')

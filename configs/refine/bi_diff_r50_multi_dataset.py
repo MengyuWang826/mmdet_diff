@@ -35,8 +35,8 @@ model = dict(
         pad_width=40,
         object_size=object_size,
         patch_size=patch_size,
-        batch_max=2,
-        area_thr=4096,
+        batch_max=8,
+        area_thr=512,
         use_local_step=True)) 
 
 img_norm_cfg = dict(
@@ -93,7 +93,7 @@ data = dict(
         pipeline=test_pipeline,
         type=dataset_type,
         ann_file=ann_root + 'lvis_v1_val_cocofied.json',
-        coarse_file='all_json/coarse_json_cocofiedlvis/transfiner_r50_3x_deform.json',
+        coarse_file='data/lvis_annotations/maskrcnn_lvis_val_cocofied.json',
         img_prefix=img_root),
     test_dataloader=test_dataloader)
 evaluation = dict(metric=['bbox', 'segm'])
