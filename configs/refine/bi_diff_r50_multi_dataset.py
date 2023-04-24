@@ -35,8 +35,9 @@ model = dict(
         pad_width=40,
         object_size=object_size,
         patch_size=patch_size,
-        batch_max=16,
-        area_thr=512)) 
+        batch_max=2,
+        area_thr=4096,
+        use_local_step=True)) 
 
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
