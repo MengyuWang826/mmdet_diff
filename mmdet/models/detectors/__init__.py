@@ -48,7 +48,8 @@ from .diffusion_refine import DiffusionRefine
 from .binary_diffusion import BinaryDiffusionRefine
 from .refinementor import Refinementor
 from .sam_refinementor import SamRefinementor
-from .diff_refinementor import DiffRefinementor
+from .diff_refine_instance import DiffRefineInstance
+from .diff_refine_semantic import DiffRefineSemantic
 
 __all__ = [
     'ATSS', 'BaseDetector', 'SingleStageDetector', 'TwoStageDetector', 'RPN',
@@ -60,5 +61,5 @@ __all__ = [
     'SOLOv2', 'DeformableDETR', 'AutoAssign', 'YOLOF', 'CenterNet', 'YOLOX',
     'TwoStagePanopticSegmentor', 'PanopticFPN', 'QueryInst', 'LAD', 'TOOD',
     'MaskFormer', 'DDOD', 'Mask2Former', 'DiffusionRefine', 'BinaryDiffusionRefine',
-    'Refinementor', 'SamRefinementor'
+    'Refinementor', 'SamRefinementor', 'DiffRefineInstance', 'DiffRefineSemantic'
 ]

@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import argparse
 import os
-# os.environ['CUDA_VISIBLE_DEVICES']='7'
+os.environ['CUDA_VISIBLE_DEVICES']='0'
 import os.path as osp
 import time
 import warnings
@@ -131,9 +131,6 @@ def main():
     if args.eval and args.format_only:
         raise ValueError('--eval and --format_only cannot be both specified')
 
-    if args.out is not None and not args.out.endswith(('.pkl', '.pickle')):
-        raise ValueError('The output file must be a pkl file.')
-
     cfg = Config.fromfile(args.config)
 
     # replace the ${key} with the value of cfg.key
@@ -141,6 +138,8 @@ def main():
 
     # update data root according to MMDET_DATASETS
     update_data_root(cfg)
+
+    task = cfg.get('task', None)
 
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
@@ -240,8 +239,7 @@ def main():
 
     if not distributed:
         model = build_dp(model, cfg.device, device_ids=cfg.gpu_ids)
-        outputs = single_gpu_test(model, data_loader, args.show, args.show_dir,
-                                  args.show_score_thr)
+        outputs = single_gpu_test(model, data_loader, task, out_dir=args.out)
     else:
         model = build_ddp(
             model,
@@ -261,9 +259,6 @@ def main():
 
     rank, _ = get_dist_info()
     if rank == 0:
-        if args.out:
-            print(f'\nwriting results to {args.out}')
-            mmcv.dump(outputs, args.out)
         kwargs = {} if args.eval_options is None else args.eval_options
         if args.format_only:
             dataset.format_results(outputs, **kwargs)

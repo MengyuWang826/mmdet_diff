@@ -4,8 +4,10 @@ import numpy as np
 from .base_refinementor import BaseRefinementor
 from ..builder import DETECTORS, build_head, build_loss
 import numpy as np
+from mmcv.ops import nms
 
 from PIL import Image
+import cv2
 
 def uniform_sampler(num_steps, batch_size, device):
     indices_np = np.random.choice(num_steps, size=(batch_size,))
@@ -34,7 +36,7 @@ def mask2bboxcenter(input_masks, device, scale_factor=4):
     # center_x = 0.5 * (bboxes[:, 0] + bboxes[:, 2])
     # center_y = 0.5 * (bboxes[:, 1] + bboxes[:, 3])
     # center_coors = torch.stack((center_x, center_y), dim=1)
-    return bboxes
+    return bboxes 
 
 def mask2bbox(mask):
     x_any = mask.any(axis=0)
@@ -46,7 +48,7 @@ def mask2bbox(mask):
     return x_1, y_1, x_2, y_2
 
 @DETECTORS.register_module()
-class DiffRefinementor(BaseRefinementor):
+class DiffRefineInstance(BaseRefinementor):
     def __init__(self,
                  task,
                  denoise_model,
@@ -55,9 +57,9 @@ class DiffRefinementor(BaseRefinementor):
                  test_cfg,
                  loss_mask=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
                  loss_texture=dict(type='TextureL1Loss', loss_weight=5.0),
-                 num_classes=80,
+                 num_classes=77,
                  init_cfg=None):
-        super(DiffRefinementor, self).__init__(task=task, init_cfg=init_cfg)
+        super(DiffRefineInstance, self).__init__(task=task, init_cfg=init_cfg)
 
         self.denoise_model = build_head(denoise_model)
         self.train_cfg = train_cfg
@@ -148,35 +150,23 @@ class DiffRefinementor(BaseRefinementor):
             img_masks = tiny_coarse_masks
         else:
             current_device = img.device
-            object_imgs, object_masks, orisize_flag, object_coors = self._get_object_input(img, coarse_masks, img_metas, current_device)
-            batch_max = self.test_cfg.get('batch_max', 0)
-            num_ins = len(object_masks)
-            if num_ins <= batch_max:
-                xs = [(object_masks, object_imgs)]
-            else:
-                xs = []
-                for idx in range(0, num_ins, batch_max):
-                    end = min(num_ins, idx + batch_max)
-                    xs.append((object_masks[idx: end], object_imgs[idx:end]))
-            res, fine_probs = self.p_sample_loop(xs, current_device)
-            img_masks = _do_paste_mask(res, object_coors, img_metas)
+            img_masks = coarse_masks
+            fine_probs, orisize_flag, object_coors = None, None, None
+
+            use_global_step = self.test_cfg.get('use_global_step', False)
+            if use_global_step:
+                img_masks, fine_probs, orisize_flag, object_coors = self.global_refine(img, coarse_masks, img_metas, current_device)
+
+            # local_save(img, img_masks, coarse_masks, torch.zeros_like(img_masks), img_metas, 'global')
 
             use_local_step = self.test_cfg.get('use_local_step', False)
             if use_local_step:
-                if not orisize_flag.all():
-                    refined_masks = img_masks[~ orisize_flag]
-                    local_refine_masks = img_masks[orisize_flag]
-                    local_refine_masks = self.local_refine(local_refine_masks)
-                    img_masks = torch.cat((refined_masks, local_refine_masks), dim=0)
+                img_masks = self.local_refine(img, img_masks, fine_probs, orisize_flag, object_coors, img_metas, current_device)
+            # local_save(img, img_masks, coarse_masks, torch.zeros_like(img_masks), img_metas, 'local')
             img_masks = img_masks >= 0.5
             img_masks = img_masks.cpu().numpy().astype(np.uint8)
             img_masks = np.concatenate((img_masks, tiny_coarse_masks), axis=0)
             
-        # refine_save(object_masks, x)
-
-        
-        # single_mask_save(x.squeeze(1), 'object')
-        # single_mask_save(img_masks, 'pan')
 
         assert len(img_masks) == len(dt_bboxes)
         bboxes = dt_bboxes[:, :5]
@@ -194,6 +184,81 @@ class DiffRefinementor(BaseRefinementor):
         dt_bboxes = dt_bboxes[0][valid_idx]
         dt_bboxes = np.concatenate((dt_bboxes, tiny_dt_bboxes), axis=0)
         return coarse_masks[0].masks[valid_idx], coarse_masks[0].masks[invalid_idx], dt_bboxes
+    
+    def global_refine(self, img, coarse_masks, img_metas, current_device):
+        object_imgs, object_masks, orisize_flag, object_coors = self._get_object_input(img, coarse_masks, img_metas, current_device)
+        batch_max = self.test_cfg.get('batch_max', 0)
+        num_ins = len(object_masks)
+        if num_ins <= batch_max:
+            xs = [(object_masks, object_imgs)]
+        else:
+            xs = []
+            for idx in range(0, num_ins, batch_max):
+                end = min(num_ins, idx + batch_max)
+                xs.append((object_masks[idx: end], object_imgs[idx:end]))
+        res, fine_probs = self.p_sample_loop(xs, current_device)
+        img_masks = _do_paste_mask(res, object_coors, img_metas)
+        return img_masks, fine_probs, orisize_flag, object_coors
+    
+    def local_refine(self, img, img_masks, fine_probs, orisize_flag, object_coors, img_metas, current_device):
+        if isinstance(img_masks, np.ndarray):
+            img_masks = torch.tensor(img_masks, dtype=torch.float32, device=current_device)
+        patch_size = self.test_cfg.get('patch_size', 0)
+        h, w = img_metas[0]['img_shape'][:2]
+        local_refine_masks = []
+        if fine_probs is not None:
+            fine_prob_thr = self.test_cfg.get('fine_prob_thr', 0)
+            for mask, fine_prob, flag, object_coor in zip(img_masks, fine_probs, orisize_flag, object_coors):
+                if not flag:
+                    x_1_0b, y_1_ob, x_2_ob, y_2_ob = object_coor.float()
+                    fine_prob = F.interpolate(fine_prob.unsqueeze(0), 
+                                              size=((y_2_ob-y_1_ob).int().item(), (x_2_ob-x_1_0b).int().item())).squeeze(0).squeeze(0)
+                    low_cofidence_points = fine_prob < fine_prob_thr
+                    scores = fine_prob[low_cofidence_points]
+                    y_c, x_c = torch.where(low_cofidence_points)
+                    scores = 1 - scores
+                    patch_coors = self._get_patch_coors(x_c, y_c, x_1_0b, x_2_ob, y_1_ob, y_2_ob, patch_size, scores)
+                    patch_img, patch_mask, patch_coors = self._get_patch_input(img, mask, patch_coors)
+                    single_img_save(patch_img, img_metas)
+                    single_mask_save(patch_mask, 0, 'coarse')
+                    local_masks, _ = self.p_sample_loop([(patch_mask, patch_img)], patch_img.device)
+                    single_mask_save(local_masks >= 0.5, 0, 'final')
+                    # train_save(patch_img, local_masks, patch_mask, torch.zeros_like(local_masks), img_metas, 0)
+                    mask = self.paste_local_patch(local_masks, mask, patch_coors)
+
+                    save_mask = mask.cpu().numpy()
+                    save_mask = ((save_mask >= 0.5) * 255).astype(np.uint8)
+                    Image.fromarray(save_mask).save(f'results/pan.png')
+
+                local_refine_masks.append(mask)
+        else:
+            for mask in img_masks:
+                y_c, x_c, scores = find_float_boundary(mask)
+                patch_coors = self._get_patch_coors(x_c, y_c, 0, w, 0, h, patch_size, scores)
+                patch_img, patch_mask, patch_coors = self._get_patch_input(img, mask, patch_coors)
+                # single_img_save(patch_img, img_metas)
+                # single_mask_save(patch_mask, 0, 'coarse')
+                batch_max = self.test_cfg.get('batch_max', 32)
+                num_ins = len(patch_img)
+                if num_ins <= batch_max:
+                    xs = [(patch_mask, patch_img)]
+                else:
+                    xs = []
+                    for idx in range(0, num_ins, batch_max):
+                        end = min(num_ins, idx + batch_max)
+                        xs.append((patch_mask[idx: end], patch_img[idx:end]))
+                local_masks, _ = self.p_sample_loop(xs, current_device)
+                # single_mask_save(local_masks >= 0.5, 0, 'final')
+                train_save(patch_img, local_masks, patch_mask, torch.zeros_like(local_masks), img_metas, 0)
+                mask = self.paste_local_patch(local_masks, mask, patch_coors)
+                
+                save_mask = mask.cpu().numpy()
+                save_mask = ((save_mask >= 0.5) * 255).astype(np.uint8)
+                Image.fromarray(save_mask).save(f'results/pan.png')
+
+                local_refine_masks.append(mask)
+        local_refine_masks = torch.stack(local_refine_masks, dim=0)
+        return local_refine_masks
 
     def _get_pan_input(self, img, coarse_masks, img_metas, current_device):
         img_h, img_w = img_metas[0]['img_shape'][:2]
@@ -245,26 +310,80 @@ class DiffRefinementor(BaseRefinementor):
         orisize_flag = torch.tensor(orisize_flag, device=current_device)
         return object_imgs, object_masks, orisize_flag, object_coors
     
-    def local_refine(self, masks):
-        return masks
+    def _get_patch_coors(self, x_c, y_c, X_1, X_2, Y_1, Y_2, patch_size, scores):
+        y_1, y_2 = y_c - patch_size/2, y_c + patch_size/2 
+        x_1, x_2 = x_c - patch_size/2, x_c + patch_size/2
+        invalid_y = y_1 < Y_1
+        y_1[invalid_y] = Y_1
+        y_2[invalid_y] = Y_1 + patch_size
+        invalid_y = y_2 > Y_2
+        y_1[invalid_y] = Y_2 - patch_size
+        y_2[invalid_y] = Y_2
+        invalid_x = x_1 < X_1
+        x_1[invalid_x] = X_1
+        x_2[invalid_x] = X_1 + patch_size
+        invalid_x = x_2 > X_2
+        x_1[invalid_x] = X_2 - patch_size
+        x_2[invalid_x] = X_2
+        proposals = torch.stack((x_1, y_1, x_2, y_2), dim=-1)
+        patch_coors, _ = nms(proposals, scores, iou_threshold=self.test_cfg.get('iou_thr', 0.2))
+        return patch_coors
     
-    def p_sample_loop(self, xs, current_device):
-        indices = list(range(self.num_timesteps))[::-1]
+    def _get_patch_input(self, img, mask, patch_coors):
+        model_size = self.test_cfg.get('objtct_size', 256)
+        mask = mask.unsqueeze(0).unsqueeze(0)
+        patch_coors = patch_coors.cpu().numpy().astype(np.int16)
+        patch_imgs, patch_masks = [], []
+        for coor in patch_coors:
+            patch_imgs.append(img[:, :, coor[1]:coor[3], coor[0]:coor[2]])
+            patch_masks.append(mask[:, :, coor[1]:coor[3], coor[0]:coor[2]])
+        patch_imgs = F.interpolate(torch.cat(patch_imgs, dim=0), size=(model_size, model_size))
+        patch_masks = F.interpolate(torch.cat(patch_masks, dim=0), size=(model_size, model_size))
+        patch_masks = (patch_masks >= 0.5).float()
+        return patch_imgs, patch_masks, patch_coors
+    
+    def paste_local_patch(self, local_masks, mask, patch_coors):
+        patch_size = self.test_cfg.get('patch_size', 0)
+        zeor_mask = torch.zeros_like(mask)
+        weight = torch.zeros_like(mask)
+        # local_masks = local_masks.squeeze(1)
+        local_masks = F.interpolate(local_masks, size=patch_size).squeeze(1)
+        local_weight = torch.ones_like(local_masks[0])
+        for local_mask, coor in zip(local_masks, patch_coors):
+            zeor_mask[coor[1]:coor[3], coor[0]:coor[2]] += local_mask
+            weight[coor[1]:coor[3], coor[0]:coor[2]] += local_weight
+        zeor_mask = zeor_mask / weight
+        zeor_mask = (zeor_mask >= 0.5).float()
+        for coor in patch_coors:
+            mask[coor[1]:coor[3], coor[0]:coor[2]] = zeor_mask[coor[1]:coor[3], coor[0]:coor[2]]
+        return mask
+    
+    def p_sample_loop(self, xs, indices, current_device, use_first_step_flag=False, use_last_step_flag=True):
         res, fine_probs = [], []
         for data in xs:
-            x, img = data
-            cur_fine_probs = torch.zeros_like(x)
+            x, img, cur_fine_probs = data
+            if cur_fine_probs is None:
+                cur_fine_probs = torch.zeros_like(x)
             for i in indices:
                 t = torch.tensor([i] * x.shape[0], device=current_device)
-                x, cur_fine_probs = self.p_sample(img, x, cur_fine_probs, t)
+                first_step_flag = (use_first_step_flag and i==indices[0])
+                last_step_flag = (use_last_step_flag and i==indices[-1])
+                x, cur_fine_probs = self.p_sample(img, x, cur_fine_probs, t, first_step_flag, last_step_flag)
             res.append(x)
             fine_probs.append(cur_fine_probs)
         res = torch.cat(res, dim=0)
         fine_probs = torch.cat(fine_probs, dim=0)
         return res, fine_probs
 
-    def p_sample(self, img, x, cur_fine_probs, t):
-        z = torch.cat((img, x), dim=1)
+    def p_sample(self, img, x, cur_fine_probs, t, first_step_flag, last_step_flag):
+        if first_step_flag:
+            sample_noise = torch.rand(size=x.shape, device=img.device)
+            zero = torch.zeros_like(x)
+            sample_map = (sample_noise <= 0.5).float()
+            x_last = x * sample_map + (1 - sample_map) * zero
+            z = torch.cat((img, x_last), dim=1)
+        else:
+            z = torch.cat((img, x), dim=1)
         pred_logits = self.denoise_model(z, t)
         t = t[0].item()
         pred_x_start = (pred_logits >= 0).float()
@@ -273,15 +392,107 @@ class DiffRefinementor(BaseRefinementor):
         beta_cumprod_prev = self.betas_cumprod_prev[t]
         p_c_to_f = x_start_fine_probs * (beta_cumprod_prev - beta_cumprod) / (1 - x_start_fine_probs*beta_cumprod)
         cur_fine_probs = cur_fine_probs + (1 - cur_fine_probs) * p_c_to_f
-        if t > 0:
+        if last_step_flag:
+            return pred_logits.sigmoid(), cur_fine_probs
+        else:
             sample_noise = torch.rand(size=x.shape, device=x.device)
             fine_map = (sample_noise < cur_fine_probs).float()
             x_prev = pred_x_start * fine_map + x * (1 - fine_map)
-            # single_mask_save(cur_fine_probs, t, 'fine_probs')
-            # sample_save(x, pred_x_start, x_prev)
+            # single_mask_save(x_prev, t, 'x_prev')
+            # single_mask_save(pred_x_start, t, 'start')
             return x_prev, cur_fine_probs
-        else:
-            return pred_logits.sigmoid(), cur_fine_probs
+
+    def slide_window_local_refine(self, img, img_masks, coarse_masks, cur_fine_probs, local_indices, bbox):
+        x_1_ob, y_1_ob, x_2_ob, y_2_ob = bbox
+        h, w = img.shape[-2], img.shape[-1]
+        patch_size = self.test_cfg.get('patch_size', 0)
+        overlap_width = self.test_cfg.get('overlap_fraction', 0) * patch_size
+        x_start = max(x_1_ob, patch_size // 2)
+        x_end = min(x_2_ob, w - patch_size // 2)
+        y_start = max(y_1_ob, patch_size // 2)
+        y_end = min(y_2_ob, w - patch_size // 2)
+        x = np.arange(x_start, x_end, patch_size-overlap_width)
+        y = np.arange(y_start, y_end, patch_size-overlap_width)
+        X, Y = np.meshgrid(x, y)
+        X = X.reshape(-1, 1)
+        Y = Y.reshape(-1, 1)
+        x_1 = X - patch_size//2
+        x_2 = X + patch_size//2
+        y_1 = Y - patch_size//2
+        y_2 = Y + patch_size//2
+        patch_coors = np.concatenate((x_1, y_1, x_2, y_2), axis=-1).astype(np.int16)
+
+        # sample_noise = torch.rand(size=img_masks.shape, device=img_masks.device)
+        # fine_map = (sample_noise < cur_fine_probs).float()
+        # x_t = img_masks * fine_map + coarse_masks * (1 - fine_map)
+        # x_t = img_masks
+        x_t = img_masks
+        patch_imgs, patch_masks, patch_fine_probs, new_patch_coors = self._crop_patch(img, x_t, cur_fine_probs, patch_coors)
+        local_masks, _ = self.p_sample_loop([(patch_masks, patch_imgs, patch_fine_probs)], 
+                                            local_indices, 
+                                            patch_imgs.device)
+        return self.paste_local_patch(local_masks, img_masks.squeeze(0).squeeze(0), new_patch_coors)
+    
+    def _crop_patch(self, img, mask, cur_fine_probs, patch_coors):
+        model_size = self.test_cfg.get('objtct_size', 256)
+        patch_imgs, patch_masks, patch_fine_probs, new_patch_coors = [], [], [], []
+        for coor in patch_coors:
+            patch_mask = mask[:, :, coor[1]:coor[3], coor[0]:coor[2]]
+            if patch_mask.sum():
+                patch_imgs.append(img[:, :, coor[1]:coor[3], coor[0]:coor[2]])
+                patch_fine_probs.append(cur_fine_probs[:, :, coor[1]:coor[3], coor[0]:coor[2]])
+                patch_masks.append(patch_mask)
+                new_patch_coors.append(coor)
+        patch_imgs = F.interpolate(torch.cat(patch_imgs, dim=0), size=(model_size, model_size))
+        patch_masks = F.interpolate(torch.cat(patch_masks, dim=0), size=(model_size, model_size))
+        patch_fine_probs = F.interpolate(torch.cat(patch_fine_probs, dim=0), size=(model_size, model_size))
+        patch_masks = (patch_masks >= 0.5).float()
+        return patch_imgs, patch_masks, patch_fine_probs, new_patch_coors
+    
+    def uniform_blur(self, object_img, current_device):
+        object_img = object_img.cpu().numpy()[0]
+        object_img = object_img.transpose(1, 2, 0)
+        object_img = cv2.blur(object_img, (5,5))
+        object_img = torch.tensor(object_img.transpose(2, 0, 1), dtype=torch.float32, device=current_device).unsqueeze(0)
+    
+    def crop_object_refine(self, img, img_masks, cur_fine_probs, bbox):
+        pad_width = 0
+        a = 1
+        pass
+    
+    def simple_test_semantic(self, img_metas, img, coarse_masks, **kwargs):
+        current_device = img.device
+        model_size = self.test_cfg.get('object_size', 0)
+        ori_shape = img_metas[0]['ori_shape'][:2]
+        
+        coarse_masks = torch.tensor(coarse_masks[0].masks, dtype=torch.float32, device=current_device)
+        img_masks = F.interpolate(coarse_masks.unsqueeze(0), size=(model_size, model_size), mode='bilinear')
+        object_img = F.interpolate(img, size=(model_size, model_size), mode='bilinear')
+
+        do_blur = self.test_cfg.get('do_blur', False)
+        if do_blur:
+            object_img = self.uniform_blur(object_img)
+        
+        indices = list(range(self.num_timesteps))[::-1]
+        global_indices = indices[:2]
+        object_indices = indices[2:4]
+        local_indices = indices[4:]
+
+        # global refine
+        img_masks, cur_fine_probs = self.p_sample_loop([(img_masks, object_img, None)], 
+                                                       global_indices, current_device, 
+                                                       use_first_step_flag=True,
+                                                       use_last_step_flag=False)
+        img_masks = F.interpolate(img_masks, size=ori_shape, mode='bilinear')
+        cur_fine_probs = F.interpolate(cur_fine_probs, size=ori_shape, mode='bilinear')
+        img_masks = (img_masks >= 0.5).float()
+        bbox = mask2bbox(img_masks[0, 0].cpu().numpy())
+
+        img_masks = self.crop_object_refine(img, img_masks, cur_fine_probs, bbox)
+
+        mask = self.slide_window_local_refine(img, img_masks, coarse_masks, cur_fine_probs, local_indices, bbox)
+        return [(mask.cpu().numpy(), img_metas[0])]
+        
     
     def _format_bboxes_results(self,bboxes, labels):
         '''
@@ -349,44 +560,18 @@ def _do_paste_mask(masks, object_coors, img_metas):
    
 
 @torch.no_grad()
-def generate_block_target(mask, area):
-    expand_flag = np.random.rand(1)[0] <= 0.5
-    # width_frac = np.random.rand(1)
-    # boundary_width = max((int(np.sqrt(area) / 5 * width_frac[0]), 2))
-    boundary_width = max((int(np.sqrt(area) / 5), 2))
-    mask_target = mask.float().unsqueeze(0).unsqueeze(0)
-
-    # boundary region
-    kernel_size = 2 * boundary_width + 1
-    laplacian_kernel = - torch.ones(1, 1, kernel_size, kernel_size).to(
-        dtype=torch.float32, device=mask_target.device).requires_grad_(False)
-    laplacian_kernel[:, 0, boundary_width, boundary_width] = kernel_size ** 2 - 1
-
-    pad_target = F.pad(mask_target, (boundary_width, boundary_width, boundary_width, boundary_width), "constant", 0)
-
-    # pos_boundary
-    pos_boundary_targets = F.conv2d(pad_target, laplacian_kernel, padding=0)
-    pos_boundary_targets = pos_boundary_targets.clamp(min=0) / float(kernel_size ** 2)
-    pos_boundary_targets[pos_boundary_targets > 0.1] = 1
-    pos_boundary_targets[pos_boundary_targets <= 0.1] = 0
-    pos_boundary_targets = pos_boundary_targets
-
-    # neg_boundary
-    neg_boundary_targets = F.conv2d(1 - pad_target, laplacian_kernel, padding=0)
-    neg_boundary_targets = neg_boundary_targets.clamp(min=0) / float(kernel_size ** 2)
-    neg_boundary_targets[neg_boundary_targets > 0.1] = 1
-    neg_boundary_targets[neg_boundary_targets <= 0.1] = 0
-    neg_boundary_targets = neg_boundary_targets
-
-    # generate block target
-    block_target = torch.zeros_like(mask_target).float().requires_grad_(False)
-    if expand_flag:
-        boundary_inds = (pos_boundary_targets + neg_boundary_targets + mask_target) > 0
-    else:
-        boundary_inds = (mask_target - pos_boundary_targets) > 0
-    block_target[boundary_inds] = 1
-    block_target = block_target.squeeze(0).squeeze(0)
-    return block_target
+def find_float_boundary(mask, width=3):
+    # Extract boundary from instance mask
+    maskdt = mask.unsqueeze(0).unsqueeze(0).float()
+    boundary_finder = maskdt.new_ones((1, 1, width, width))
+    boundary_mask = F.conv2d(maskdt, boundary_finder, stride=1, padding=width//2)
+    bml = torch.abs(boundary_mask - width*width)
+    bms = torch.abs(boundary_mask)
+    fbmask = torch.min(bml, bms) / (width*width/2)
+    fbmask = fbmask[0, 0]
+    y_c, x_c = torch.where(fbmask)
+    scores = fbmask[y_c, x_c]
+    return y_c, x_c, scores
 
 def mask_save(gt, coarse, refine):
     refine = refine.squeeze(1)
@@ -422,6 +607,7 @@ def multi_mask_save(coarse, refine):
 
 def train_save(img, x_start, x_last, x_t, img_metas, t):
     x_start = torch.cat([x_start]*3, dim=1)
+    x_start = x_start >= 0.5
     x_last = torch.cat([x_last]*3, dim=1)
     x_t = torch.cat([x_t]*3, dim=1)
     img = img.cpu().numpy()
@@ -441,8 +627,32 @@ def train_save(img, x_start, x_last, x_t, img_metas, t):
         out1 = np.concatenate((img, gt_mask), axis=0)
         out2 = np.concatenate((coarse_mask, q), axis=0)
         out = np.concatenate((out1, out2), axis=1)
-        ct = t[idx].item()
         Image.fromarray(out).save(f'results/{idx}_train.png')
+        idx += 1
+
+def local_save(img, x_start, x_last, x_t, img_metas, filename):
+    x_start = torch.stack([x_start]*3, dim=1)
+    x_start = x_start >= 0.5
+    x_last = np.stack([x_last]*3, axis=1)
+    x_t = torch.stack([x_t]*3, dim=1)
+    img = img[0].cpu().numpy()
+    img = img.transpose((1, 2, 0))
+    img_mean = img_metas[0]['img_norm_cfg']['mean'].reshape(1, 1, 3)
+    img_std = img_metas[0]['img_norm_cfg']['std'].reshape(1, 1, 3)
+    img = img * img_std + img_mean
+    img = img.astype(np.uint8)
+    x_start = x_start.cpu().numpy().transpose((0, 2, 3, 1)).astype(np.uint8)
+    x_start = x_start * 255
+    x_last = x_last.transpose((0, 2, 3, 1)).astype(np.uint8)
+    x_last = x_last * 255
+    x_t = x_t.cpu().numpy().transpose((0, 2, 3, 1)).astype(np.uint8)
+    x_t = x_t * 255
+    idx = 0
+    for gt_mask, coarse_mask, q in zip(x_start, x_last, x_t):
+        out1 = np.concatenate((img, gt_mask), axis=0)
+        out2 = np.concatenate((coarse_mask, q), axis=0)
+        out = np.concatenate((out1, out2), axis=1)
+        Image.fromarray(out).save(f'results/{idx}_{filename}.png')
         idx += 1
 
 def refine_save(coarse, refine):
@@ -484,4 +694,21 @@ def single_mask_save(masks, t, file_name):
     masks = masks.squeeze(1).cpu().numpy()
     masks = (masks * 255).astype(np.uint8)
     for i, mask in enumerate(masks):
-        Image.fromarray(mask).save(f'results/{file_name}_{i}_{t}.png')
+        Image.fromarray(mask).save(f'results/{i}_{t}_{file_name}.png')
+
+def single_img_save(imgs, img_metas):
+    imgs = imgs.cpu().numpy()
+    imgs = imgs.transpose((0, 2, 3, 1))
+    img_mean = img_metas[0]['img_norm_cfg']['mean'].reshape(1, 1, 1, 3)
+    img_std = img_metas[0]['img_norm_cfg']['std'].reshape(1, 1, 1, 3)
+    imgs = imgs * img_std + img_mean
+    imgs = imgs.astype(np.uint8)
+    for idx, img in enumerate(imgs):
+        Image.fromarray(img).save(f'results/{idx}_img.png')
+        idx += 1
+
+def two_mask_save(mask1, mask2, mask3, i):
+    out = torch.cat((mask1, mask2, mask3), dim=-1)
+    out = out.cpu().numpy()
+    out = (out * 255).astype(np.uint8)
+    Image.fromarray(out).save(f"results/{i}.png")

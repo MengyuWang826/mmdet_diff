@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 if __name__ == '__main__':
     gt_json = 'data/lvis_annotations/lvis_v1_val_cocofied.json'
-    dt_json = 'all_json/coarse_json/mask2former_r50_50e.json'
+    dt_json = 'all_json/coarse_json/pointrend_r50_3x.json'
 
     gt = LVIS(gt_json)
     dts = json.load(open(dt_json))
@@ -17,5 +17,5 @@ if __name__ == '__main__':
                 new_dts.append(dt)
             p.update() 
 
-    with open('all_json/coarse_json_cocofiedlvis/mask2former_r50_50e.json', 'w') as f:
+    with open('all_json/coarse_json_cocofiedlvis/pointrend_r50_3x.json', 'w') as f:
         json.dump(new_dts, f)

@@ -30,6 +30,7 @@ pretrain
 json_results
 all_json
 unused_data
+semantic_results
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

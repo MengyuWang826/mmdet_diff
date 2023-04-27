@@ -4,11 +4,11 @@ _base_ = [
 
 object_size = 256
 patch_size = 128
-task='instance'
+task='semantic'
 
 model = dict(
-    type='DiffRefineInstance',
-    task='instance',
+    type='DiffRefineSemantic',
+    task='semantic',
     denoise_model=dict(
         type='DenoiseUNet',
         in_channels=4,
@@ -33,15 +33,14 @@ model = dict(
     train_cfg=dict(
         pad_width=20),
     test_cfg=dict(
-        pad_width=20,
-        object_size=object_size,
-        patch_size=128,
-        batch_max=32,
-        area_thr=1024,
-        use_local_step=False,
-        use_global_step=True,
-        fine_prob_thr = 0.9,
-        iou_thr=0.3)) 
+        overlap_fraction=1/4,
+        do_blur=False,
+        ob_pad_width=200,
+        model_size=256,
+        patch_size_1=1024,
+        patch_size_2=256,
+        batch_max=8,
+        size_thr=100)) 
 
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
@@ -59,11 +58,10 @@ train_pipeline = [
 
 test_pipeline = [
     dict(type='LoadImageFromFile'),
-    dict(type='LoadCoarseMasksNew', test_mode=True, with_bbox=True),
-    # dict(type='Resize', img_scale=test_scale, keep_ratio=True),
+    dict(type='LoadCoarseMasksNew', test_mode=True),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'coarse_masks', 'dt_bboxes'])
+    dict(type='Collect', keys=['img', 'coarse_masks'])
 ]
 
 
@@ -95,10 +93,8 @@ data = dict(
     val_dataloader=test_dataloader,
     test=dict(
         pipeline=test_pipeline,
-        type=dataset_type,
-        ann_file=ann_root + 'lvis_v1_val_cocofied.json',
-        coarse_file='all_json/coarse_json_cocofiedlvis/pointrend_r50_3x.json',
-        img_prefix=img_root),
+        type='BigDataset',
+        data_root='data/big/deeplab_ms'),
     test_dataloader=test_dataloader)
 evaluation = dict(metric=['bbox', 'segm'])
 

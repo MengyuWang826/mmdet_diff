@@ -233,7 +233,7 @@ class CollectionRefine(LVISV1Dataset):
         coarse_masks = []
         bboxes = []
         lables = []
-        coarse_dts = self.coarse_infos[img_id]
+        coarse_dts = self.coarse_infos[img_id] 
         for dt in coarse_dts:
             label = self.cat2label[dt['category_id']]
             coarse_masks.append(dt['segmentation'])
@@ -277,10 +277,6 @@ class CollectionRefine(LVISV1Dataset):
                 pipeline.
         """
         img_info = self.data_infos[idx]
-
-        # img_info = self.coco.load_imgs([252219])[0]
-        # img_info['filename'] = img_info['coco_url'].replace(
-        #     'http://images.cocodataset.org/', '')
         
         coarse_info = self.get_coarse_info_test(img_info)
         results = dict(img_info=img_info, coarse_info=coarse_info)

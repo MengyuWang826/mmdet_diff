@@ -22,9 +22,9 @@ def val_coco(result_path, ann_path, val_type):
 
 if __name__ =='__main__':
     gt_json = 'data/lvis_annotations/lvis_v1_val_cocofied.json'
-    dt_json = 'data/lvis_annotations/maskrcnn_lvis_val_cocofied.json'
+    dt_json = 'all_json/refine_json/pointrend_r50_3x.json'
     dataset = 'lvis'
     if dataset == 'coco':
         a = val_coco(dt_json, gt_json, 'segm')
     else:
-        a = val_lvis(dt_json, gt_json, 'segm')
+        a = val_lvis(dt_json, gt_json, 'boundary')

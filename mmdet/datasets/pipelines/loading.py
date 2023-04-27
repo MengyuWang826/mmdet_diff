@@ -74,8 +74,7 @@ class LoadImageFromFile:
         img = mmcv.imfrombytes(
             img_bytes, flag=self.color_type, channel_order=self.channel_order)
         if self.to_float32:
-            img = img.astype(np.float32)
-        
+            img = img.astype(np.float32)        
 
         results['filename'] = filename
         results['ori_filename'] = results['img_info']['filename']
@@ -779,7 +778,7 @@ class LoadCoarseMasksNew:
         return mask
 
     def __call__(self, results):
-        h, w = results['img_info']['height'], results['img_info']['width']
+        h, w = results['img_shape'][:2]
         coarse_masks = results['coarse_info']['masks']
         if not self.test_mode:
             if coarse_masks is not None:
@@ -791,10 +790,18 @@ class LoadCoarseMasksNew:
                 # Image.fromarray(coarse_masks).save(f'results/modify.png')
             results['coarse_masks'] = BitmapMasks([coarse_masks], coarse_masks.shape[-2], coarse_masks.shape[-1])
         else:
-            new_coarse_masks = []
-            for mask in coarse_masks:
-                new_coarse_masks.append(self._poly2mask(mask, h, w))
-            results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
+            if isinstance(coarse_masks, str):
+                filename = osp.join(results['img_prefix'], coarse_masks)
+                mask = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
+                assert mask is not None
+                mask = mask.astype(np.float32) / 255
+                mask = (mask >= 0.5).astype(np.uint8)
+                results['coarse_masks'] = BitmapMasks([mask], mask.shape[-2], mask.shape[-1])
+            else:
+                new_coarse_masks = []
+                for mask in coarse_masks:
+                    new_coarse_masks.append(self._poly2mask(mask, h, w))
+                results['coarse_masks'] = BitmapMasks(new_coarse_masks, h, w)
         results['mask_fields'].append('coarse_masks')
         if self.with_bbox:
             bboxes = results['coarse_info']['bboxes']
